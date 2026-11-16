@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Ruta</string>
+    <!-- Shown in Settings > Notification access; the component name must stay MapsNavigationListener. -->
+    <string name="listener_label">Ruta directions &amp; music</string>
+    <string name="ride_service_label">Ruta scooter link</string>
+</resources>

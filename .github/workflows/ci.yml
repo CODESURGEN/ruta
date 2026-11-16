@@ -1,0 +1,41 @@
+# Host tests and a compile check on every push and pull request. No signing: CI never sees a key.
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    env:
+      KOTLIN_VERSION: "2.4.21"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Install Kotlin compiler
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/kotlinc.zip" \
+            "https://github.com/JetBrains/kotlin/releases/download/v${KOTLIN_VERSION}/kotlin-compiler-${KOTLIN_VERSION}.zip"
+          unzip -q "$RUNNER_TEMP/kotlinc.zip" -d "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/kotlinc/bin" >> "$GITHUB_PATH"
+          echo "KOTLIN_LIB=$RUNNER_TEMP/kotlinc/lib" >> "$GITHUB_ENV"
+
+      - uses: android-actions/setup-android@v3
+
+      - name: Install Android build-tools 36 and platform 36
+        run: sdkmanager "build-tools;36.0.0" "platforms;android-36"
+
+      - name: Host tests
+        run: bash test.sh
+
+      - name: Compile
+        run: bash build.sh --compile-only
