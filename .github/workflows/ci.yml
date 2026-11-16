@@ -29,10 +29,13 @@ jobs:
           echo "$RUNNER_TEMP/kotlinc/bin" >> "$GITHUB_PATH"
           echo "KOTLIN_LIB=$RUNNER_TEMP/kotlinc/lib" >> "$GITHUB_ENV"
 
-      - uses: android-actions/setup-android@v3
-
       - name: Install Android build-tools 36 and platform 36
-        run: sdkmanager "build-tools;36.0.0" "platforms;android-36"
+        # Uses the SDK preinstalled on GitHub's Ubuntu runners.
+        run: |
+          SDKM=$(ls -d "$ANDROID_HOME"/cmdline-tools/*/bin | sort -V | tail -1)/sdkmanager
+          yes | "$SDKM" --licenses > /dev/null || true
+          "$SDKM" "build-tools;36.0.0" "platforms;android-36"
+          echo "ANDROID_SDK=$ANDROID_HOME" >> "$GITHUB_ENV"
 
       - name: Host tests
         run: bash test.sh
