@@ -45,8 +45,8 @@ done
 unset _name _saved
 
 # Single source of truth for the version and SDK levels; aapt2 injects them into the manifest.
-VERSION_CODE=100
-VERSION_NAME=1.0.0
+VERSION_CODE=101
+VERSION_NAME=1.0.1
 MIN_SDK=30
 TARGET_SDK=36
 

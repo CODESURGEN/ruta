@@ -2,7 +2,7 @@
 icon, logcat tag, no pre-rename names), resources (Material Symbols icons, licence notice, theme),
 signing, alignment.
 
-Usage: python3 tests/check_apk.py dist/ruta-1.0.0.apk   (build.sh runs it on build/signed.apk)
+Usage: python3 tests/check_apk.py dist/ruta-1.0.1.apk   (build.sh runs it on build/signed.apk)
 Artifact verification only; it does not replace installing and launching on the phone.
 """
 import os
@@ -17,7 +17,7 @@ PACKAGE = "dev.codesurgen.ruta"
 CODE_PACKAGE = "dev.codesurgen.ruta"   # Kotlin package of the components
 LABEL = "Ruta"
 LISTENER_LABEL = "Ruta directions & music"   # Settings > Notification access
-VERSION_CODE, VERSION_NAME = "100", "1.0.0"
+VERSION_CODE, VERSION_NAME = "101", "1.0.1"
 APK_FILE = f"ruta-{VERSION_NAME}.apk"  # what build.sh publishes to dist/
 # Brand in code: logcat tag "Ruta" (DiagLog, Icons, Host); the 2.0 tag must be gone (fails the build).
 # Strings that still say "RideDeck" (shown or logged) fail the build too. Lower-case "ridedeck."

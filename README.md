@@ -44,7 +44,7 @@ Other Vida models may work; please open an issue with what you see.
 ## Install
 
 1. Open the [latest release](https://github.com/CODESURGEN/ruta/releases/latest) on your phone and
-   download `ruta-1.0.0.apk`.
+   download `ruta-1.0.1.apk`.
 2. Open the file. When Android asks, allow your browser (or file manager) to
    **install unknown apps**.
 3. **Play Protect.** Ruta is not on Google Play and reads notifications (for Maps directions and
@@ -56,11 +56,11 @@ Other Vida models may work; please open an issue with what you see.
    3. Open the APK again and install it.
    4. Turn **Scan apps with Play Protect** back on.
 
-   Developers can also install over USB with `adb install -r ruta-1.0.0.apk`.
+   Developers can also install over USB with `adb install -r ruta-1.0.1.apk`.
 
 Official APKs are signed with the Ruta release key, certificate SHA-256:
 `CE:53:91:68:9D:03:E0:54:31:AE:4E:B1:A7:E7:82:7D:B1:2C:D3:CD:2C:3A:63:A5:11:76:7E:06:63:0E:BE:D3`
-(check with `apksigner verify --print-certs ruta-1.0.0.apk`).
+(check with `apksigner verify --print-certs ruta-1.0.1.apk`).
 
 Updates install over the top and keep your history. An APK signed with a different key (for
 example your own build) cannot update it.

@@ -36,11 +36,6 @@
         <intent>
             <action android:name="android.media.browse.MediaBrowserService"/>
         </intent>
-        <!-- UPI apps, so More › Support offers a "Pay with" chooser. -->
-        <intent>
-            <action android:name="android.intent.action.VIEW"/>
-            <data android:scheme="upi"/>
-        </intent>
     </queries>
 
     <!-- The notification listener means Play Protect's enhanced fraud protection (India and some

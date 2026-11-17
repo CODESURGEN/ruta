@@ -1,7 +1,5 @@
 package dev.codesurgen.ruta
 
-import android.content.ClipData
-import android.content.ClipboardManager
 import android.content.Intent
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
@@ -39,8 +37,6 @@ import java.util.Locale
  *    state, grant button).
  *  - Data: Export CSV, Diagnostics (sub-page: tests, battery unit reset, demo mode switch, scooter
  *    info, raw probe replies, log viewer with copy/share in the top bar). Back closes the sub-page.
- *  - Support: "Show some love" opens a UPI pay intent ([UPI_ID], no amount) through a chooser;
- *    with no UPI app it copies the ID instead. A trailing Copy button copies the ID.
  *  - About: the Ruta mark and version, open source link ([SOURCE_URL]), licences sheet
  *    (res/raw/licenses), disclaimer.
  * Rows that open another page or flow carry a chevron; nothing else changes the screen.
@@ -51,9 +47,7 @@ class MoreScreen(private val host: Host) : Screen {
     companion object {
         /** Project page for the "Open source" row (source code and issue tracker). */
         const val SOURCE_URL = "https://github.com/CODESURGEN/ruta"
-        /** The project's UPI ID for "Show some love" (More › Support). The only copy of it. */
-        const val UPI_ID = "repalamanideep54-1@okhdfcbank"
-        private const val FALLBACK_VERSION = "1.0.0"
+        private const val FALLBACK_VERSION = "1.0.1"
         private const val LOG_LINES = 300
         private const val PROBE_MS = 20_000L
         /** Diagnostics › Demo mode's line while it is off. */
@@ -164,14 +158,6 @@ class MoreScreen(private val host: Host) : Screen {
             tooltipText = "Connection log, scooter tests and raw data"
         })
         page.add(data, 0)
-
-        addSection("Support")
-        val support = ListGroup(ctx)
-        val copyUpi = IconActionButton(ctx, "content_copy", "Copy UPI ID") { copyUpiId() }
-        support.addView(ListItem(ctx, "Show some love", "UPI · $UPI_ID", "ecg_heart", copyUpi) { openUpi() }.apply {
-            tooltipText = "Support Ruta with any UPI app"
-        })
-        page.add(support, 0)
 
         addSection("About")
         val about = ListGroup(ctx)
@@ -514,27 +500,6 @@ class MoreScreen(private val host: Host) : Screen {
     private fun openSource() {
         runCatching { host.activity.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(SOURCE_URL)).addCategory(Intent.CATEGORY_BROWSABLE)) }
             .onFailure { host.showSnackbar("No browser found") }
-    }
-
-    /** UPI pay intent without an amount (the payer picks it). No UPI app: copy the ID instead. */
-    private fun openUpi() {
-        val uri = Uri.parse("upi://pay?pa=" + Uri.encode(UPI_ID, "@") + "&pn=Ruta&cu=INR&tn=Support%20Ruta")
-        val pay = Intent(Intent.ACTION_VIEW, uri)
-        val activity = host.activity
-        // Package visibility can hide UPI apps from the query; a direct start still reaches them.
-        val visible = runCatching { activity.packageManager.queryIntentActivities(pay, 0).isNotEmpty() }.getOrDefault(false)
-        val started = runCatching {
-            activity.startActivity(if (visible) Intent.createChooser(pay, "Pay with") else pay)
-        }.isSuccess
-        if (!started) copyUpiId()
-    }
-
-    private fun copyUpiId() {
-        val copied = runCatching {
-            ctx.getSystemService(ClipboardManager::class.java)!!.setPrimaryClip(ClipData.newPlainText("UPI ID", UPI_ID))
-        }.isSuccess
-        main.haptic(HapticFeedbackConstants.CONFIRM)
-        host.showSnackbar(if (copied) "UPI ID copied" else "UPI · $UPI_ID")
     }
 
     private fun openLicences() {
