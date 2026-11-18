@@ -163,6 +163,8 @@ object Demo {
         return NavPreview(
             frame = frame,
             instruction = nav.cue.instruction,
+            road = nav.cue.road,
+            thenTurn = nav.cue.thenTurn,
             display = if (directionsOn && live.linked) NavDisplay.SHOWING else NavDisplay.UNAVAILABLE,
             enabled = directionsOn,
             listenerConnected = true,

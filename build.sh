@@ -5,6 +5,9 @@
 #   bash build.sh                   full build -> dist/ruta-<version>.apk, then tests/check_apk.py
 #   bash build.sh --compile-only    kotlinc only (what the APK is built from)
 #   bash build.sh --resources-only  aapt2 compile + link of res/ and the manifest only (no Kotlin)
+#   bash build.sh --unsigned        full build without signing -> dist/ruta-<version>-unsigned.apk
+#                                   (F-Droid signs its own builds; no key needed). The build is
+#                                   reproducible: this APK equals the signed one minus its signature.
 #
 # Environment (optional unless noted; defaults in brackets):
 #   ANDROID_HOME / ANDROID_SDK_ROOT / ANDROID_SDK   Android SDK [~/Library/Android/sdk or ~/Android/Sdk]
@@ -12,7 +15,7 @@
 #   ANDROID_PLATFORM        platform to compile against [android-36]
 #   KOTLIN_LIB              folder with kotlin-stdlib.jar and kotlinx-coroutines-core-jvm.jar
 #                           [found next to kotlinc, e.g. /opt/homebrew/opt/kotlin/libexec/lib]
-# Signing (full build only; required, there is no fallback key):
+# Signing (full build only, not --unsigned; required, there is no fallback key):
 #   RUTA_KEYSTORE           signing keystore (.jks / .keystore)
 #   RUTA_KEY_ALIAS          key alias in it
 #   RUTA_KEYSTORE_PASS      keystore password; RUTA_KEY_PASS key password [same as the keystore's]
@@ -45,21 +48,23 @@ done
 unset _name _saved
 
 # Single source of truth for the version and SDK levels; aapt2 injects them into the manifest.
-VERSION_CODE=101
-VERSION_NAME=1.0.1
+VERSION_CODE=102
+VERSION_NAME=1.0.2
 MIN_SDK=30
 TARGET_SDK=36
 
 BUILD="$SRC/build"
 OUTPUT="$SRC/dist/ruta-$VERSION_NAME.apk"
+UNSIGNED_OUTPUT="$SRC/dist/ruta-$VERSION_NAME-unsigned.apk"
 
 mode=full
 case "${1:-}" in
     "") ;;
     --compile-only) mode=compile ;;
     --resources-only) mode=resources ;;
-    -h|--help) sed -n '2,26p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
-    *) fail "unknown flag '$1' (use --compile-only, --resources-only or none)" ;;
+    --unsigned) mode=unsigned ;;
+    -h|--help) sed -n '2,29p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    *) fail "unknown flag '$1' (use --compile-only, --resources-only, --unsigned or none)" ;;
 esac
 
 # ---------------------------------------------------------------- signing key (full build only)
@@ -69,7 +74,7 @@ if [[ $mode == full ]]; then
 Set RUTA_KEYSTORE, RUTA_KEY_ALIAS and RUTA_KEYSTORE_PASS (RUTA_KEY_PASS if it differs) in the
 environment or in ./local.env (git-ignored). APKs are never signed with a debug key. Forks: make a
 key with keytool (see 'bash build.sh --help') and set RUTA_SIGNER_SHA256 to its certificate SHA-256.
-'bash build.sh --compile-only' needs no key."
+'bash build.sh --compile-only' and 'bash build.sh --unsigned' need no key."
     }
     [[ -n "${RUTA_KEYSTORE:-}" ]] || no_key "RUTA_KEYSTORE is unset"
     KEYSTORE="${RUTA_KEYSTORE/#\~/$HOME}"
@@ -119,6 +124,7 @@ mkdir -p "$BUILD" "$SRC/dist"
 # A failed full build must not leave an older (or unchecked) APK at the path people install from.
 # Only this version's file is touched; earlier releases stay as they are.
 [[ $mode != full ]] || rm -f "$OUTPUT"
+[[ $mode != unsigned ]] || rm -f "$UNSIGNED_OUTPUT"
 
 # Resources + manifest -> base APK (resources.arsc stored uncompressed by aapt2). There is no R class:
 # code loads resources by name (resources.getIdentifier), so names are checked in the lint stage.
@@ -182,13 +188,26 @@ grep -vE '[Kk]otlin[ .][Mm]etadata|^[[:space:]]+at |: Should never be called$|^$
 stage=aapt2
 link_resources "$BUILD/unsigned.apk"
 
-# 5. Add the dex files (d8 splits into classes2.dex... only past 64K method refs).
+# 5. Add the dex files (d8 splits into classes2.dex... only past 64K method refs). Fixed mode and
+# timestamp (aapt2's 1980-01-01) and no extra fields keep the APK byte-identical across machines,
+# which F-Droid's reproducible-build check relies on.
 stage=package
-(cd "$BUILD/dex" && zip -q -X -D "$BUILD/unsigned.apk" classes*.dex)
+chmod 644 "$BUILD"/dex/classes*.dex
+TZ=UTC touch -t 198001010000 "$BUILD"/dex/classes*.dex
+(cd "$BUILD/dex" && TZ=UTC zip -q -X -D "$BUILD/unsigned.apk" classes*.dex)
 
-# 6. Align (16 KB page alignment for uncompressed entries) and sign v2+v3.
+# 6. Align (16 KB page alignment for uncompressed entries) and sign v2+v3, keeping zipalign's layout
+# (apksigner would re-pad every entry) so the signed APK is the unsigned one plus a signature.
 stage=zipalign
 "$BT/zipalign" -f -P 16 4 "$BUILD/unsigned.apk" "$BUILD/aligned.apk"
+if [[ $mode == unsigned ]]; then
+    stage=check_apk
+    python3 "$SRC/tests/check_apk.py" --unsigned "$BUILD/aligned.apk"
+    stage=publish
+    mv -f "$BUILD/aligned.apk" "$UNSIGNED_OUTPUT"
+    printf 'Built %s (%s KB, unsigned)\n' "$UNSIGNED_OUTPUT" "$(( $(wc -c <"$UNSIGNED_OUTPUT") / 1024 ))"
+    exit 0
+fi
 stage=apksigner
 rm -f "$BUILD/signed.apk"
 # Passwords reach apksigner through its environment (env:NAME), never its command line.
@@ -196,13 +215,16 @@ RUTA_KEYSTORE_PASS="$RUTA_KEYSTORE_PASS" RUTA_KEY_PASS="${RUTA_KEY_PASS:-$RUTA_K
     "$BT/apksigner" sign --ks "$KEYSTORE" --ks-key-alias "$RUTA_KEY_ALIAS" \
     --ks-pass env:RUTA_KEYSTORE_PASS --key-pass env:RUTA_KEY_PASS \
     --v1-signing-enabled false --v2-signing-enabled true --v3-signing-enabled true \
-    --v4-signing-enabled false --out "$BUILD/signed.apk" "$BUILD/aligned.apk"
+    --v4-signing-enabled false --alignment-preserved \
+    --out "$BUILD/signed.apk" "$BUILD/aligned.apk"
 # Expected signer for check_apk: RUTA_SIGNER_SHA256 if set (forks), else check_apk's release pin.
 if [[ -n "${RUTA_SIGNER_SHA256:-}" ]]; then export RUTA_SIGNER_SHA256; else unset RUTA_SIGNER_SHA256; fi
 
 # 7. Artifact checks, then publish: dist/ only ever holds a checked APK.
 stage=check_apk
 python3 "$SRC/tests/check_apk.py" "$BUILD/signed.apk"
+# The release must be the unsigned build plus a signature, or F-Droid's reproducible-build check fails.
+python3 "$SRC/tests/compare_apks.py" "$BUILD/signed.apk" "$BUILD/aligned.apk"
 stage=publish
 mv -f "$BUILD/signed.apk" "$OUTPUT"
 printf 'Built %s (%s KB)\n' "$OUTPUT" "$(( $(wc -c <"$OUTPUT") / 1024 ))"

@@ -33,6 +33,7 @@ bash test.sh                  # host tests (JVM)
 bash build.sh --compile-only  # kotlinc only; no key needed (this is what CI runs)
 bash build.sh --resources-only
 bash build.sh                 # signed APK in dist/, verified by tests/check_apk.py
+bash build.sh --unsigned      # same APK, unsigned (F-Droid); no key needed
 adb install -r dist/ruta-*.apk
 ```
 

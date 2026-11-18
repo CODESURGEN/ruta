@@ -128,6 +128,10 @@ data class NavPreview(
     val frame: NavFrame? = null,
     /** Google Maps' own instruction text (for the spoken description). */
     val instruction: String? = null,
+    /** Maps' full road name for the maneuver ([MapsCue.road], not the TFT "Then …" hint); null when unknown. */
+    val road: String? = null,
+    /** The second back-to-back maneuver ([MapsCue.thenTurn]); null when none. */
+    val thenTurn: Int? = null,
     /** Display state: SHOWING only when the TCU acknowledged a recent frame. */
     val display: NavDisplay = NavDisplay.UNAVAILABLE,
     /** "Scooter display" directions toggle. */

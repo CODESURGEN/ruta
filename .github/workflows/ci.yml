@@ -42,3 +42,10 @@ jobs:
 
       - name: Compile
         run: bash build.sh --compile-only
+
+      # What F-Droid builds. Its SHA-256 must equal a local 'bash build.sh --unsigned' of the same
+      # commit, or F-Droid's reproducible-build check (store/fdroid) will fail.
+      - name: Unsigned APK (reproducibility)
+        run: |
+          bash build.sh --unsigned
+          sha256sum dist/*-unsigned.apk

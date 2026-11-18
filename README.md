@@ -23,9 +23,11 @@ calls on the scooter's own display. Everything stays on your phone: no account, 
 - 🛵 **Live cluster.** Speed, front and rear pack charge, range, drive / standby / charging.
 - 🔋 **Battery you can read.** Health, temperature, efficiency (km per 1 %), "Full in" while charging.
 - 🧭 **Directions on the scooter.** Turn arrow, distance, road name and arrival from Google Maps.
+- ↪️ **Back-to-back turns.** "Then left" instead of the road name when Maps announces a second turn right after.
 - ⛽ **Range check.** "12 km spare", "Tight" or "Short by 4 km" for the route you are on.
 - 🎵 **Music.** Song, artist and volume on the display; handlebar buttons play, skip and change volume.
 - 📞 **Calls.** Caller name on the display; answer or reject from the handlebar; missed calls and messages.
+- 💬 **Show who messaged.** Optional (off by default): the sender's name on the music line when nothing is playing.
 - 🗺️ **Ride receipts.** Rides recorded with the phone's GPS: route map, start and end, distance, speeds, battery used.
 - 📈 **Insights.** 24 h / 7 d / 30 d charts for charge, range, temperature, health, pack balance and charging.
 - 📍 **Find my scooter.** Remembers where you parked; one tap for walking directions.
@@ -44,7 +46,7 @@ Other Vida models may work; please open an issue with what you see.
 ## Install
 
 1. Open the [latest release](https://github.com/CODESURGEN/ruta/releases/latest) on your phone and
-   download `ruta-1.0.1.apk`.
+   download `ruta-1.0.2.apk`.
 2. Open the file. When Android asks, allow your browser (or file manager) to
    **install unknown apps**.
 3. **Play Protect.** Ruta is not on Google Play and reads notifications (for Maps directions and
@@ -56,11 +58,11 @@ Other Vida models may work; please open an issue with what you see.
    3. Open the APK again and install it.
    4. Turn **Scan apps with Play Protect** back on.
 
-   Developers can also install over USB with `adb install -r ruta-1.0.1.apk`.
+   Developers can also install over USB with `adb install -r ruta-1.0.2.apk`.
 
 Official APKs are signed with the Ruta release key, certificate SHA-256:
 `CE:53:91:68:9D:03:E0:54:31:AE:4E:B1:A7:E7:82:7D:B1:2C:D3:CD:2C:3A:63:A5:11:76:7E:06:63:0E:BE:D3`
-(check with `apksigner verify --print-certs ruta-1.0.1.apk`).
+(check with `apksigner verify --print-certs ruta-1.0.2.apk`).
 
 Updates install over the top and keep your history. An APK signed with a different key (for
 example your own build) cannot update it.
@@ -128,6 +130,7 @@ Requirements: JDK 17+, Kotlin (`kotlinc` on `PATH`), Android SDK with `build-too
 bash test.sh                  # host tests on the JVM
 bash build.sh --compile-only  # compile only, no signing key needed
 bash build.sh                 # signed APK in dist/, checked by tests/check_apk.py
+bash build.sh --unsigned      # same APK without a signature (what F-Droid builds), no key needed
 ```
 
 A full build needs a signing key from `RUTA_KEYSTORE`, `RUTA_KEY_ALIAS`, `RUTA_KEYSTORE_PASS`

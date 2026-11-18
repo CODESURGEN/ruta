@@ -617,7 +617,9 @@ object DemoData {
         val continueM = ROUTE_M - 400.0 - 1_100.0 - DESTINATION_M
         listOf(
             Leg(NavTurn.LEFT, "Turn left onto Riverside Rd", "Riverside Rd", 400.0),
-            Leg(NavTurn.ROUNDABOUT_RIGHT, "At the roundabout, take the 2nd exit onto Harbour St", "Harbour St", 1_100.0),
+            // Back-to-back: the roundabout's cue announces the left turn 300 m after it ("Then left" on the TFT).
+            Leg(NavTurn.ROUNDABOUT_RIGHT, "At the roundabout, take the 2nd exit onto Market St, then turn left", "Market St", 800.0),
+            Leg(NavTurn.LEFT, "Turn left onto Harbour St", "Harbour St", 300.0),
             Leg(NavTurn.STRAIGHT, "Continue on Harbour St", "Harbour St", continueM),
             Leg(NavTurn.DESTINATION, "Lakeside Market is on the right", "Lakeside Market", DESTINATION_M)
         )
@@ -754,7 +756,8 @@ object DemoData {
         val remaining = roundTenths(max(0.0, ROUTE_M - travelledM))
         val cue = MapsCue(
             turn = leg.turn, distanceMeters = maneuver, instruction = leg.instruction, road = leg.road,
-            arrivalHour24 = arrival.first, arrivalMinute = arrival.second, remainingMeters = remaining, rerouting = false
+            arrivalHour24 = arrival.first, arrivalMinute = arrival.second, remainingMeters = remaining, rerouting = false,
+            thenTurn = MapsNavigationParser.thenTurn(leg.instruction)
         )
         return DemoNav(cue, maneuver, remaining)
     }

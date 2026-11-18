@@ -20,6 +20,8 @@ import java.util.Locale
  *     word longer than the 14-byte field is cut.
  * The result never holds a word cut mid-way except in that last case, contains only ASCII letters,
  * digits, '?', '+' and single spaces, and is at most [FIELD_BYTES] long. Pure Kotlin (host tests).
+ * [thenHint] replaces the road with "Then left" / "Then keep L" / … when Maps announces a second
+ * maneuver right after the current one, within the same budget.
  */
 object RoadNames {
     /** Characters the TFT shows before its "…" (≈ 8–9 seen on the VX2; confirm with the road-name width test). */
@@ -53,6 +55,38 @@ object RoadNames {
 
         val word = core.withIndex().maxWith(compareBy<IndexedValue<String>>({ score(it.value) }, { it.value.length }, { it.index })).value
         return word.take(FIELD_BYTES)
+    }
+
+    /**
+     * "Then …" hint for the road field when a second maneuver follows right after the current one
+     * (MapsCue.thenTurn): the longest wording that fits [budget] (same TFT budget as [fit]), else the
+     * shortest. ASCII letters and spaces only ('-' would reach the TFT as '_'). Null for a [turn]
+     * without a hint (straight, destination, merge, ferry): the cue then keeps its road name.
+     */
+    fun thenHint(turn: Int, budget: Int = TFT_CHARS): String? {
+        val forms = THEN_HINTS[turn] ?: return null
+        val limit = budget.coerceIn(1, FIELD_BYTES)
+        return forms.firstOrNull { it.length <= limit } ?: forms.last()
+    }
+
+    /** Wordings per NavTurn code, longest first; the last one fits the 9-character default budget. */
+    private val THEN_HINTS: Map<Int, List<String>> = run {
+        val left = listOf("Then left")
+        val right = listOf("Then right", "Then R")
+        val uTurn = listOf("Then U turn", "Then Uturn", "Then U")
+        val keepLeft = listOf("Then keep left", "Then keep L", "Then kp L")
+        val keepRight = listOf("Then keep right", "Then keep R", "Then kp R")
+        val roundabout = listOf("Then rndabout", "Then rdbt")
+        val exit = listOf("Then exit")
+        mapOf(
+            NavTurn.LEFT to left, NavTurn.SLIGHT_LEFT to left, NavTurn.SHARP_LEFT to left,
+            NavTurn.RIGHT to right, NavTurn.SLIGHT_RIGHT to right, NavTurn.SHARP_RIGHT to right,
+            NavTurn.U_TURN_LEFT to uTurn, NavTurn.U_TURN_RIGHT to uTurn,
+            NavTurn.KEEP_LEFT to keepLeft, NavTurn.FORK_LEFT to keepLeft,
+            NavTurn.KEEP_RIGHT to keepRight, NavTurn.FORK_RIGHT to keepRight,
+            NavTurn.ROUNDABOUT_LEFT to roundabout, NavTurn.ROUNDABOUT_RIGHT to roundabout,
+            NavTurn.RAMP_LEFT to exit, NavTurn.RAMP_RIGHT to exit
+        )
     }
 
     private class Pick(val text: String, val score: Double, val from: Int) : Comparable<Pick> {

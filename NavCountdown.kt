@@ -22,7 +22,8 @@ import kotlin.math.sqrt
  *  - no distance, a maneuver seen recently (same turn and road): keep counting it down. This also
  *    covers Maps flipping between two instructions while the rider waits at the start;
  *  - no distance, a new STRAIGHT ("Head …", "Continue …") or DESTINATION: the remaining route;
- *  - otherwise 0 (Maps drops the distance when the turn is now).
+ *  - otherwise 0 (Maps drops the distance when the turn is now), also for a STRAIGHT with a second
+ *    maneuver ("Continue straight, then turn left": the turn after it is imminent).
  * The remaining route distance restarts from Maps on every update that has one (ProgressStyle
  * progressMax − progress, exact metres along the route) and counts down in between.
  * Outputs are rounded with [round] and never negative. Not thread-safe. Pure Kotlin (host tests).
@@ -53,7 +54,7 @@ class NavCountdown {
                 if (known != null && known.mapsM == explicit && abs(counted(known, travelledM) - explicit) <= tolerance(explicit)) known
                 else Anchor(Mode.FIXED, explicit.toDouble(), travelledM, explicit, nowMs)
             known != null -> known
-            cue.turn == NavTurn.STRAIGHT || cue.turn == NavTurn.DESTINATION -> Anchor(Mode.REMAINING, 0.0, travelledM, null, nowMs)
+            (cue.turn == NavTurn.STRAIGHT && cue.thenTurn == null) || cue.turn == NavTurn.DESTINATION -> Anchor(Mode.REMAINING, 0.0, travelledM, null, nowMs)
             else -> Anchor(Mode.ZERO, 0.0, travelledM, null, nowMs)
         }
         anchor.seenAt = nowMs

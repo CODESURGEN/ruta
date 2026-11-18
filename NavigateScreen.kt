@@ -128,6 +128,9 @@ class NavigateScreen(private val host: Host) : Screen {
     private var linkShown: LinkPhase? = null
     private var locationShown: PermissionState? = null
     private var fullRoad: String? = null
+    /** Spoken road (Maps' full name, not the TFT hint) and second maneuver, for TalkBack and the sheet. */
+    private var spokenRoad = ""
+    private var thenTurn: Int? = null
     private var pulse: ObjectAnimator? = null
     private val turnPop = Spring(1f, Motion.STIFFNESS, 0.6f, 0.001f) { s -> turnTile.scaleX = s; turnTile.scaleY = s }
     /** 1 = the turn tile wears primaryContainer (directions are on the scooter), 0 = neutral preview. */
@@ -315,7 +318,8 @@ class NavigateScreen(private val host: Host) : Screen {
         else buildString {
             append(Icons.turnDescription(frame.turn)).append(", ")
             append(distance.text).append(' ').append(distanceUnit.text)
-            if (frame.roadText.isNotBlank()) append(", ").append(frame.roadText)
+            if (spokenRoad.isNotBlank()) append(", ").append(spokenRoad)
+            thenTurn?.let { append(", then ").append(Icons.turnDescription(it).lowercase(Locale.ROOT)) }
             append(". ").append(arrival.spoken).append(", ").append(timeLeft.spoken).append(", ").append(kmLeft.spoken)
             append(". ").append(mirror.spoken)
         }
@@ -334,7 +338,7 @@ class NavigateScreen(private val host: Host) : Screen {
         // The hero speaks for both (one TalkBack stop); fadeThrough resets the incoming view to AUTO.
         incoming.importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS
         outgoing.importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS
-        if (!route) { lastTurn = null; fullRoad = null; rangeLevel = null; setPulse(false) }
+        if (!route) { lastTurn = null; fullRoad = null; spokenRoad = ""; thenTurn = null; rangeLevel = null; setPulse(false) }
     }
 
     private fun bindFrame(frame: NavFrame, testing: Boolean, preview: NavPreview) {
@@ -356,7 +360,11 @@ class NavigateScreen(private val host: Host) : Screen {
         val cut = roadText.length > RoadNames.TFT_CHARS
         road.show(if (cut) roadText.take(RoadNames.TFT_CHARS).trimEnd() + "…" else roadText)
         road.tint(Theme.onSurface)
-        fullRoad = roadText.takeIf { it.isNotEmpty() } ?: preview.instruction?.takeIf { !testing && it.isNotBlank() }
+        // The frame's road may be a "Then …" hint; the sheet and TalkBack get Maps' road and the second turn.
+        val cueRoad = preview.road?.trim()?.takeIf { !testing }
+        spokenRoad = cueRoad ?: roadText
+        thenTurn = preview.thenTurn?.takeIf { !testing }
+        fullRoad = spokenRoad.takeIf { it.isNotEmpty() } ?: preview.instruction?.takeIf { !testing && it.isNotBlank() }
 
         // Maps leaves some values out; a frame from elsewhere (test, demo) carries all of them.
         val cue = if (Demo.active) null else NavBridge.cue
@@ -445,6 +453,7 @@ class NavigateScreen(private val host: Host) : Screen {
             val rows = ArrayList<Pair<String, String>>()
             rows += "Scooter display" to mirror.label
             fullRoad?.let { rows += "Road" to it }
+            thenTurn?.let { rows += "Then" to Icons.turnDescription(it) }
             rows += arrival.what to arrival.display
             rows += timeLeft.what to timeLeft.display
             rows += kmLeft.what to kmLeft.display

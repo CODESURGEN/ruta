@@ -31,7 +31,8 @@ import java.util.Locale
  *    settings), Add scooter (host opens the onboarding flow).
  *  - Features: Directions, Music, Calls, Handlebar buttons, Auto-connect switches.
  *  - Alerts (2.2): range warning, charge alert with its "Notify at" 80 / 90 / 100 % group, charging
- *    stopped, remember where I park; a "Notifications off · Allow" row while alerts can't reach the
+ *    stopped, remember where I park, show who messaged (sender on the scooter's music line; off by
+ *    default, needs no notification permission); a "Notifications off · Allow" row while alerts can't reach the
  *    shade (they still show in-app). Settings live in [Alerts].
  *  - Permissions: one row each (icon in the standard tonal circle, name, check or error-coloured
  *    state, grant button).
@@ -47,7 +48,7 @@ class MoreScreen(private val host: Host) : Screen {
     companion object {
         /** Project page for the "Open source" row (source code and issue tracker). */
         const val SOURCE_URL = "https://github.com/CODESURGEN/ruta"
-        private const val FALLBACK_VERSION = "1.0.1"
+        private const val FALLBACK_VERSION = "1.0.2"
         private const val LOG_LINES = 300
         private const val PROBE_MS = 20_000L
         /** Diagnostics › Demo mode's line while it is off. */
@@ -103,6 +104,8 @@ class MoreScreen(private val host: Host) : Screen {
         "When the charge stops rising for ${ChargeDetector.STALL_MS / 60_000} min below the charge you chose. Needs the scooter connected while it charges")
     private val parkingSwitch = alertSwitch(AlertKind.PARKING, "Remember where I park", null, "pin_drop",
         "Saves where you leave the scooter; Home shows it while you're away. Off forgets it")
+    private val messageSwitch = alertSwitch(AlertKind.MESSAGE_SENDER, "Show who messaged", "On the scooter display", "chat",
+        "Sender name on the scooter's music line when nothing is playing")
     private val targetGroup = ButtonGroup(
         ctx, Alerts.TARGETS.map { GroupItem("$it %", description = "Notify at $it percent") },
         selected = Alerts.TARGETS.indexOf(Alerts.chargeTarget(ctx)).coerceAtLeast(0)
@@ -142,6 +145,7 @@ class MoreScreen(private val host: Host) : Screen {
         alerts.addView(ChargeAlertBlock())
         alerts.addView(stoppedAlert)
         alerts.addView(parkingSwitch)
+        alerts.addView(messageSwitch)
         page.add(alerts, 0)
 
         addSection("Permissions")
@@ -273,7 +277,7 @@ class MoreScreen(private val host: Host) : Screen {
         host.addScooter()
     }
 
-    /** Opens the Change PIN sheet for saved scooter [mac] (the shell's "Wrong PIN" snackbar action). */
+    /** Opens the Change PIN sheet for saved scooter [mac] (the shell's "Scooter didn't accept this PIN" snackbar action). */
     fun changePin(mac: String) {
         val scooter = runCatching { host.savedScooters }.getOrElse { emptyList() }
             .firstOrNull { it.mac.equals(mac, ignoreCase = true) } ?: return
@@ -454,15 +458,17 @@ class MoreScreen(private val host: Host) : Screen {
         val charge = Alerts.enabled(ctx, AlertKind.CHARGE_TARGET)
         val stopped = Alerts.enabled(ctx, AlertKind.CHARGE_STOPPED)
         val parking = Alerts.enabled(ctx, AlertKind.PARKING)
+        val messages = Alerts.enabled(ctx, AlertKind.MESSAGE_SENDER)
         val target = Alerts.chargeTarget(ctx)
         val demo = host.demoActive
-        val key = listOf(range, charge, stopped, parking, target, alertAccess, notificationsBlocked, demo)
+        val key = listOf(range, charge, stopped, parking, messages, target, alertAccess, notificationsBlocked, demo)
         if (key == alertsKey) return
         alertsKey = key
         rangeAlert.checked = range
         chargeAlert.checked = charge
         stoppedAlert.checked = stopped
         parkingSwitch.checked = parking
+        messageSwitch.checked = messages
         targetGroup.select(Alerts.TARGETS.indexOf(target).coerceAtLeast(0))
         // The target matters to both charge switches ("Notify at", "Before 80 %").
         Alerts.TARGETS.indices.forEach { targetGroup.setSegmentEnabled(it, charge || stopped) }

@@ -20,10 +20,11 @@ Ruta connects to your scooter over Bluetooth and shows what matters, in big numb
 
 • Live cluster: speed, front and rear pack charge, range, drive / standby / charging
 • Battery you can read: health, temperature, efficiency (km per 1 %), "Full in" while charging
-• Directions on the scooter: turn arrow, distance, road name and arrival from Google Maps
+• Directions on the scooter: turn arrow, distance, road name and arrival from Google Maps; "Then left" for back-to-back turns
 • Range check: "12 km spare", "Tight" or "Short by 4 km" for the route you are on
 • Music: song, artist and volume on the display; handlebar buttons play, skip and change volume
 • Calls: caller name on the display; answer or reject from the handlebar; missed calls and messages
+• Show who messaged (optional): the sender's name on the scooter display when no music is playing
 • Ride receipts: route map, start and end, distance, speeds and battery used for every ride
 • Insights: 24 h / 7 d / 30 d charts for charge, range, temperature, health and charging
 • Find my scooter: remembers where you parked; one tap for walking directions
@@ -53,7 +54,8 @@ Source code (Apache-2.0): https://github.com/CODESURGEN/ruta
 - Notification access (NotificationListenerService): reads Google Maps navigation notifications (turn-by-turn),
   the media session (now playing), the caller name from call notifications, and missed-call and message
   notifications from any app to show directions, music, the caller and missed-call / unread counts on the
-  scooter display. Nothing is sent off the phone; a local 7-day diagnostics log may keep parts of it.
+  scooter display. Optional "Show who messaged" (off by default) also shows a new message's app and sender
+  name, never its text, on the scooter display. Nothing is sent off the phone; a local 7-day diagnostics log may keep parts of it.
 - READ_PHONE_STATE: know when a call is ringing, active or ended, for the scooter's call screen.
 - READ_CALL_LOG: Android only provides the caller's number to apps holding this permission; the number is shown
   on the scooter display. Ruta does not copy the call log.

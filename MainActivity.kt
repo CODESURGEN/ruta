@@ -62,8 +62,6 @@ private const val AUTO_CONNECT = "auto_connect"
 private const val DATA_MAC = "data_mac"
 /** Share-sheet text cap (Binder transactions are limited to ~1 MB). */
 private const val SHARE_LIMIT = 200_000
-/** Short error for a stale or broken Android pairing (GATT 5/15/137); onboarding offers Bluetooth settings for it. */
-internal const val PAIR_AGAIN = "Pair the scooter again"
 /**
  * QA / ADB (F-DEMO): `--es demo parked|riding|navigating|charging|call|music|off` starts that demo
  * scenario (or ends demo mode); `--ez demo_seed true` (re)seeds the demo history.
@@ -966,8 +964,8 @@ class MainActivity : Activity(), Host {
     }
 
     /**
-     * Pairing outcomes outside the onboarding flow (which shows its own). A wrong PIN also fails the
-     * connection, so its snackbar comes from [onConnectionStatus]; ScooterConnection logs the rest.
+     * Pairing outcomes outside the onboarding flow (which shows its own). A pairing failure also fails
+     * the connection, so its snackbar comes from [onConnectionStatus]; ScooterConnection logs the rest.
      */
     private fun onPairingEvent(event: PairingEvent) {
         if (onboarding != null || Demo.active) return
@@ -1032,10 +1030,11 @@ class MainActivity : Activity(), Host {
         if (wasAuto && friendly == "Couldn't reach the scooter") {
             // The scooter is often simply off or out of range when Ruta opens.
             showSnackbar("Scooter not nearby", "Retry") { connect() }
-        } else when (friendly) {
-            "Bluetooth is off" -> showSnackbar(friendly, "Turn on") { requestBluetoothOn() }
-            "Wrong PIN — try again" -> showSnackbar(friendly, "Change") { openChangePin(dataMac ?: active?.mac) }
-            PAIR_AGAIN -> showSnackbar(friendly, "Settings") { openBluetoothSettings() } // Unpair there, then connect.
+        } else when {
+            friendly == "Bluetooth is off" -> showSnackbar(friendly, "Turn on") { requestBluetoothOn() }
+            // Only a PIN the scooter received and refused offers to change it.
+            PairingRules.failureFor(friendly) == PairingFailure.WRONG_PIN -> showSnackbar(friendly, "Change") { openChangePin(dataMac ?: active?.mac) }
+            PairingRules.failureFor(friendly) == PairingFailure.STALE_BOND -> showSnackbar("Forget the scooter in Bluetooth", "Settings") { openBluetoothSettings() } // Lead with the step; then connect.
             else -> showSnackbar(friendly, "Retry") { connect() }
         }
         scheduleRender()
@@ -1052,11 +1051,11 @@ class MainActivity : Activity(), Host {
 
     /** ScooterConnection's diagnostic sentences → short, human snackbar text (the full text is logged). */
     private fun friendlyError(message: String): String = when {
-        message.contains("Wrong PIN") -> "Wrong PIN — try again"
+        // Pairing failures arrive as their PairingRules.failureTitle (classified in ScooterConnection).
+        PairingRules.failureFor(message) != null -> PairingRules.failureTitle(PairingRules.failureFor(message)!!)
         // GATT 5/15/137: Android's stored pairing no longer matches the scooter (TCU reset / re-paired).
-        message.contains("pairing problem", ignoreCase = true) -> PAIR_AGAIN
+        message.contains("pairing problem", ignoreCase = true) -> PairingRules.failureTitle(PairingFailure.STALE_BOND)
         message.contains("Bluetooth was turned off") || message.contains("Turn on Bluetooth") -> "Bluetooth is off"
-        message.contains("pairing was cancelled", ignoreCase = true) -> "Pairing cancelled"
         message.contains("could not start pairing", ignoreCase = true) -> "Couldn't pair with the scooter"
         message.contains("Lost the scooter link") -> "Lost the scooter"
         message.contains("does not expose") -> "Not a supported scooter"
@@ -1370,6 +1369,8 @@ class MainActivity : Activity(), Host {
             return NavPreview(
                 frame = frame,
                 instruction = NavBridge.cue?.instruction,
+                road = NavBridge.cue?.road,
+                thenTurn = NavBridge.cue?.thenTurn,
                 display = connection.navigationDisplay(),
                 enabled = connection.navigationEnabled,
                 testRunning = testing,

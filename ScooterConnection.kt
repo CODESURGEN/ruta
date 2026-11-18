@@ -74,6 +74,8 @@ class ScooterConnection(
     private var sawBonding = false
     /** The link dropped mid-bond; waiting [BOND_RESULT_WAIT_MS] for the bond broadcast before failing. */
     private var awaitingBondResult = false
+    /** GATT code of that mid-bond disconnect (-1 = none), so the bond receiver can tell a lost link from a refused PIN. */
+    private var pendingDropCode = -1
     private var adapterReceiver: BroadcastReceiver? = null
     private var decoder = BmsDecoder()
 
@@ -180,6 +182,9 @@ class ScooterConnection(
     private var lastMusicSentAt = 0L
     private var lastMusicLogged: MusicInfo? = null
     private var lastMeta: ByteArray? = MusicMeta.CLEAR.encode()
+    /** "Show who messaged" (More › Alerts): the sender alert on the music line, see [MessageAlerter]. */
+    private val messageAlerter = MessageAlerter()
+    private val messageListener: (MessageNotice) -> Unit = { onMessage(it) }
     /** After a final 0x0304/0x0305 failure music pauses briefly instead of retrying every second. */
     private var musicRetryAt = 0L
 
@@ -275,6 +280,7 @@ class ScooterConnection(
         testKind = null; testStartedAt = 0
         resetPhoneFeeds()
         PhoneBridge.removeListener(phoneListener)
+        PhoneBridge.removeMessageListener(messageListener)
         NavBridge.removeListener(navListener)
         PhoneBridge.stop(this)
         val wasActive = phase != LinkPhase.IDLE
@@ -340,7 +346,7 @@ class ScooterConnection(
     private fun resetAttempt() {
         linkUp = false; discoveryStarted = false; mtuRequested = false; mtuTries = 0
         stageA = false; stageB = false; heartbeat = 0; lastTcuHeartbeat = 0
-        sawBonding = false; awaitingBondResult = false
+        sawBonding = false; awaitingBondResult = false; pendingDropCode = -1
     }
 
     /**
@@ -400,7 +406,7 @@ class ScooterConnection(
             // Android's BOND_NONE broadcast: give the bond receiver a moment to classify it first.
             if (bondReceiver != null && pairingArmed && device?.bondState != BluetoothDevice.BOND_BONDED) {
                 if (!awaitingBondResult) {
-                    awaitingBondResult = true
+                    awaitingBondResult = true; pendingDropCode = code
                     log("Link dropped during pairing (GATT $code); waiting for the pairing result")
                     val attempt = generation
                     main.postDelayed({ if (attempt == generation) linkDroppedWhileBonding(g, code) }, BOND_RESULT_WAIT_MS)
@@ -434,9 +440,19 @@ class ScooterConnection(
         }
     }
 
-    /** The link is down (not mid-bond): one retry for transient codes, else fail with a reason. */
+    /**
+     * The link is down (not mid-bond): one retry for transient codes, else fail with a reason. While
+     * pairing, or with a stale bond (paired on the phone, GATT 5/15/137), the reason is the pairing
+     * failure ([PairingRules.linkFailure]).
+     */
     private fun linkDown(g: BluetoothGatt, code: Int) {
         if (retryOnce(g, code)) return
+        val target = device
+        if (target != null) {
+            val state = target.bondState
+            val failure = PairingRules.linkFailure(state, bondReceiver != null, sawBonding, PinResponder.pinDelivered(target.address), code)
+            if (failure != null) { pairingFailed(target.address, failure, state, gattCode = code); return }
+        }
         fail(when {
             code in setOf(5, 15, 137) -> "Bluetooth pairing problem (GATT $code). In Android Bluetooth settings, forget ${deviceName ?: "the scooter"}, pair again, then retry."
             phase == LinkPhase.READY -> "Scooter disconnected (GATT $code)."
@@ -445,22 +461,29 @@ class ScooterConnection(
     }
 
     /**
-     * No bond broadcast arrived within [BOND_RESULT_WAIT_MS] of a mid-bond disconnect. Bonding had
-     * started and the device is back to not bonded, or the stack reported an authentication failure
-     * (GATT 5 / 137) with our PIN armed: the scooter refused the PIN. Anything else is a link failure.
+     * No bond broadcast arrived within [BOND_RESULT_WAIT_MS] of a mid-bond disconnect. A wrong PIN
+     * needs proof the scooter received it (PinResponder delivered it, then an auth failure or the
+     * bond fell back to none); bonding that failed without our PIN is NO_PIN_REQUEST. Anything else
+     * goes through [linkDown] (one retry, then LINK_LOST).
      */
     private fun linkDroppedWhileBonding(g: BluetoothGatt, code: Int) {
         awaitingBondResult = false
         val target = device
         val state = target?.bondState
-        if (state == BluetoothDevice.BOND_BONDED) { linkDown(g, code); return }
-        if (target != null && ((sawBonding && state == BluetoothDevice.BOND_NONE) || code == 5 || code == 137)) {
-            log("Pairing failed: the scooter refused the saved PIN (link dropped, GATT $code)")
-            PinResponder.report(target.address, PairingEvent.WrongPin)
-            fail(WRONG_PIN)
+        if (target == null || state == BluetoothDevice.BOND_BONDED) { linkDown(g, code); return }
+        val failure = PairingRules.linkFailure(state ?: BluetoothDevice.BOND_NONE, true, sawBonding, PinResponder.pinDelivered(target.address), code)
+        if (failure == PairingFailure.WRONG_PIN || failure == PairingFailure.NO_PIN_REQUEST) {
+            pairingFailed(target.address, failure, state ?: BluetoothDevice.BOND_NONE, gattCode = code)
             return
         }
         linkDown(g, code)
+    }
+
+    /** Ends the attempt with pairing [failure]: logs what was seen (never the PIN), tells the UI, fails with its title. */
+    private fun pairingFailed(mac: String, failure: PairingFailure, bondState: Int, reason: Int = -1, gattCode: Int = -1) {
+        log(PairingRules.diagnostic(failure, PinResponder.delivery(mac), bondState, reason, gattCode))
+        PinResponder.report(mac, PairingEvent.BondFailed(failure))
+        fail(PairingRules.failureTitle(failure))
     }
 
     private fun onLinkUp(g: BluetoothGatt) {
@@ -476,9 +499,10 @@ class ScooterConnection(
         val pin = Scooters.pin(app, mac) // Decrypted; never logged.
         // Arming again for the same MAC keeps an arm the shell made before connecting.
         if (pin != null) PinResponder.arm(app, mac, pin) {}
-        val pinSupplied = PinResponder.isArmed(mac)
-        if (pinSupplied) { pairingArmed = true; log("Pairing with the saved PIN") }
-        status(if (pinSupplied) "Pairing with your scooter…" else "Confirm Bluetooth pairing with your scooter…")
+        // Armed only: whether the scooter actually received the PIN is PinResponder.pinDelivered.
+        val pinArmed = PinResponder.isArmed(mac)
+        if (pinArmed) { pairingArmed = true; log("Pairing with the saved PIN") }
+        status(if (pinArmed) "Pairing with your scooter…" else "Confirm Bluetooth pairing with your scooter…")
         armTimeout(90_000, "Bluetooth pairing did not finish. Pair the scooter in Android settings, then retry.")
         val attempt = generation
         val receiver = object : BroadcastReceiver() {
@@ -491,18 +515,11 @@ class ScooterConnection(
                 val reason = intent.getIntExtra(EXTRA_UNBOND_REASON, -1)
                 if (state == BluetoothDevice.BOND_BONDING) sawBonding = true
                 if (state == BluetoothDevice.BOND_NONE) log("Bond ended (reason ${reason.takeIf { it >= 0 } ?: "unknown"})")
-                when (PairingRules.bondOutcome(previous, state, pinSupplied, reason)) {
-                    BondOutcome.BONDED -> { PinResponder.report(mac, PairingEvent.Bonded); bonded(g) }
-                    BondOutcome.WRONG_PIN -> {
-                        log("Pairing failed: the scooter refused the saved PIN")
-                        PinResponder.report(mac, PairingEvent.WrongPin)
-                        fail(WRONG_PIN)
-                    }
-                    BondOutcome.REJECTED -> {
-                        PinResponder.report(mac, PairingEvent.Failed("Pairing cancelled"))
-                        fail("Bluetooth pairing was cancelled or rejected.")
-                    }
-                    BondOutcome.PENDING -> {}
+                val dropCode = if (awaitingBondResult) pendingDropCode else -1
+                when (val outcome = PairingRules.bondOutcome(previous, state, pinArmed, PinResponder.pinDelivered(mac), reason, dropCode)) {
+                    BondOutcome.Bonded -> { PinResponder.report(mac, PairingEvent.Bonded); bonded(g) }
+                    is BondOutcome.Failed -> pairingFailed(mac, outcome.failure, state, reason = reason, gattCode = dropCode)
+                    BondOutcome.Pending -> {}
                 }
             }
         }
@@ -520,7 +537,7 @@ class ScooterConnection(
         }
         // Some skins (HyperOS) let their own higher-priority component take the pairing request, so
         // our receiver never sees it and Android's dialog asks for the PIN: offer the saved PIN.
-        if (pinSupplied && pin != null) main.postDelayed({
+        if (pinArmed && pin != null) main.postDelayed({
             if (attempt == generation && bondReceiver === receiver && target.bondState == BluetoothDevice.BOND_BONDING &&
                 PinResponder.isArmed(mac) && !PinResponder.requestSeen(mac)) {
                 log("Pairing request not seen by Ruta; Android's dialog may ask for the PIN")
@@ -629,6 +646,7 @@ class ScooterConnection(
         val missingIcbt = listOf(Tcu.CALLER_INFO, Tcu.MUSIC_INFO, Tcu.MUSIC_META).filter { characteristic(it) == null }
         if (missingIcbt.isNotEmpty()) log("No ${missingIcbt.joinToString { "0x" + it.short() }} characteristic: caller/music on the display is limited")
         PhoneBridge.addListener(phoneListener)
+        PhoneBridge.addMessageListener(messageListener)
         // onReady runs inside pump()'s marker branch; the tick enqueues writes, so start it afterwards.
         val attempt = generation
         main.post { clusterTick(attempt); NavBridge.addListener(navListener) }
@@ -692,10 +710,27 @@ class ScooterConnection(
         pushMusic()
     }
 
+    /** What [MessageAlerter] needs to know now. The demo never shows sender alerts. */
+    private fun messageConditions() = MessageAlerter.Conditions(
+        enabled = !Demo.active && Alerts.enabled(app, AlertKind.MESSAGE_SENDER),
+        ready = phase == LinkPhase.READY && characteristic(Tcu.MUSIC_META) != null,
+        playing = PhoneBridge.media?.playing == true,
+        inCall = PhoneBridge.call.inCall
+    )
+
+    /** A new message (PhoneBridge): show who sent it on the music line when allowed (no names in the log). */
+    private fun onMessage(notice: MessageNotice) {
+        if (phase != LinkPhase.READY) return
+        val change = messageAlerter.message(notice, SystemClock.elapsedRealtime(), messageConditions())
+        messageAlerter.describe(change)?.let { log(it) }
+        if (change.outcome == MessageAlerter.Outcome.SHOWN) pushMusic()
+    }
+
     /**
      * 0x0304 on any change and every second while playing (track progress); 0x0305 right after
      * it, only when the bytes change (28 zeros clear the song when no session is left). Nothing
-     * during calls: the cluster shows the call then.
+     * during calls: the cluster shows the call then. A sender alert ([messageAlerter]) takes the
+     * 0x0305 slot while it shows; when it goes, the normal song (or the clear frame) is sent again.
      */
     private fun pushMusic() {
         if (phase != LinkPhase.READY) return
@@ -703,6 +738,7 @@ class ScooterConnection(
         val hasMeta = characteristic(Tcu.MUSIC_META) != null
         if (!hasInfo && !hasMeta) return
         val now = SystemClock.elapsedRealtime()
+        messageAlerter.tick(now, messageConditions())?.let { change -> messageAlerter.describe(change)?.let { log(it) } }
         if (now < musicRetryAt || PhoneBridge.call.inCall) return
         val media = if (musicEnabled) PhoneBridge.media else null
         val info = MusicInfo.of(media?.playbackState, PhoneBridge.volume.level, media?.progressPercent(now) ?: 0)
@@ -717,12 +753,14 @@ class ScooterConnection(
                 log("Display music: ${if (!info.active) "no session" else if (info.playing) "playing" else "paused"}, volume ${info.volume}/${MusicInfo.VOLUME_STEPS} · ${infoBytes.hex()}")
             }
         }
-        val meta = media?.let { MusicMeta.of(it.title, it.artist, it.album) } ?: MusicMeta.CLEAR
+        val alert = messageAlerter.meta
+        val meta = alert ?: media?.let { MusicMeta.of(it.title, it.artist, it.album) } ?: MusicMeta.CLEAR
         val metaBytes = meta.encode()
         if (hasMeta && lastMeta?.contentEquals(metaBytes) != true) {
             write(Tcu.MUSIC_META, metaBytes, critical = false, maxTries = 2, replaceable = true)
             lastMeta = metaBytes
-            log(if (meta == MusicMeta.CLEAR) "Display song cleared" else "Display song: \"${IcbtText.sanitize(meta.title, "")}\" · ${IcbtText.sanitize(meta.artist, "")}")
+            // Never the sender's name in the log: onMessage already logged "Message alert shown (App)".
+            if (alert == null) log(if (meta == MusicMeta.CLEAR) "Display song cleared" else "Display song: \"${IcbtText.sanitize(meta.title, "")}\" · ${IcbtText.sanitize(meta.artist, "")}")
         }
     }
 
@@ -762,6 +800,7 @@ class ScooterConnection(
         lastMusicInfo = null; lastMusicSentAt = 0; lastMusicLogged = null
         // An empty song is never the first 0x0305 of a connection.
         lastMeta = MusicMeta.CLEAR.encode(); musicRetryAt = 0
+        messageAlerter.reset()
     }
 
     /**
@@ -777,6 +816,13 @@ class ScooterConnection(
         val events = frame.events
         val event = events.firstOrNull() ?: return log("Handlebar $hex: no action")
         val ignored = events.drop(1).takeIf { it.isNotEmpty() }?.let { " (also decoded ${it.joinToString { e -> e.name.lowercase() }}; ignored)" }.orEmpty()
+        // Play/pause while a sender alert shows only dismisses it (it must not start music).
+        if (event == HardControlEvent.MUSIC_PLAY_PAUSE && messageAlerter.press(SystemClock.elapsedRealtime())) {
+            lastHandlebar = "dismiss message alert"; lastHandlebarAt = SystemClock.elapsedRealtime()
+            log("Handlebar $hex: message alert dismissed$ignored")
+            pushMusic()
+            return
+        }
         if (!handlebarControlsEnabled) return log("Handlebar $hex: ${event.name.lowercase()}$ignored — handlebar controls are off")
         val done = PhoneBridge.handlebar(event)
         lastHandlebar = done; lastHandlebarAt = SystemClock.elapsedRealtime()
@@ -1179,7 +1225,6 @@ class ScooterConnection(
     private fun UUID.short() = toString().substring(4, 8)
 
     private companion object {
-        const val WRONG_PIN = "Wrong PIN — try again"
         /** BluetoothDevice's hidden UNBOND_REASON_* extra on a bond-state broadcast. */
         const val EXTRA_UNBOND_REASON = "android.bluetooth.device.extra.REASON"
         /** Wait for the bond broadcast after the link drops mid-bond. */

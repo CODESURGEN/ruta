@@ -20,8 +20,11 @@ import android.provider.Settings
  * off. Nothing is posted while the demo runs. Wording: [AlertText] (Range.kt, host-tested).
  */
 
-/** The rider alerts and features with a switch in More › Alerts. */
-enum class AlertKind { RANGE, CHARGE_TARGET, CHARGE_STOPPED, PARKING }
+/**
+ * The rider alerts and features with a switch in More › Alerts. [MESSAGE_SENDER] ("Show who
+ * messaged", [MessageAlerter]) posts no notification: it writes the sender to the scooter display.
+ */
+enum class AlertKind { RANGE, CHARGE_TARGET, CHARGE_STOPPED, PARKING, MESSAGE_SENDER }
 
 /**
  * Whether alerts reach the notification shade: [ON]; [ASK] = the notification permission can be
@@ -54,8 +57,9 @@ object Alerts {
 
     // ------------------------------------------------------------------ settings
 
-    /** The switch for [kind]. Defaults: range warning, charge alert and parking on; charging stopped off. */
-    fun enabled(context: Context, kind: AlertKind): Boolean = prefs(context).getBoolean(key(kind), kind != AlertKind.CHARGE_STOPPED)
+    /** The switch for [kind]. Defaults: range warning, charge alert and parking on; charging stopped and show who messaged off. */
+    fun enabled(context: Context, kind: AlertKind): Boolean =
+        prefs(context).getBoolean(key(kind), kind != AlertKind.CHARGE_STOPPED && kind != AlertKind.MESSAGE_SENDER)
 
     fun setEnabled(context: Context, kind: AlertKind, on: Boolean) {
         prefs(context).edit().putBoolean(key(kind), on).apply()
@@ -104,7 +108,7 @@ object Alerts {
             AlertKind.RANGE -> ID_RANGE
             AlertKind.CHARGE_TARGET -> ID_CHARGE
             AlertKind.CHARGE_STOPPED -> ID_STOPPED
-            AlertKind.PARKING -> return
+            AlertKind.PARKING, AlertKind.MESSAGE_SENDER -> return
         }
         runCatching { manager(context)?.cancel(id) }
     }
@@ -190,6 +194,7 @@ object Alerts {
         AlertKind.CHARGE_TARGET -> "alert_charge_target_on"
         AlertKind.CHARGE_STOPPED -> "alert_charge_stopped"
         AlertKind.PARKING -> "alert_parking"
+        AlertKind.MESSAGE_SENDER -> "alert_message_sender"
     }
 
     private fun label(kind: AlertKind): String = when (kind) {
@@ -197,6 +202,7 @@ object Alerts {
         AlertKind.CHARGE_TARGET -> "charge alert"
         AlertKind.CHARGE_STOPPED -> "charging stopped"
         AlertKind.PARKING -> "remember where I park"
+        AlertKind.MESSAGE_SENDER -> "show who messaged"
     }
 
     private fun snap(percent: Int): Int = TARGETS.minByOrNull { kotlin.math.abs(it - percent) } ?: DEFAULT_TARGET

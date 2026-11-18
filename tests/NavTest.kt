@@ -121,6 +121,77 @@ private fun roadNames() {
     eq(NavFrame(true, NavTurn.LEFT, 0, NavTurn.STRAIGHT, 0, 0, 0, 0, "MG Road/NH-65").roadText, "MG Road_NH_65", "SDK sanitising kept")
 }
 
+private fun thenHints() {
+    val now = LocalDateTime.of(2026, 11, 16, 16, 0)
+    // (title, text) → current turn, road, then turn, TFT road text.
+    data class Case(val title: String, val text: String?, val turn: Int, val road: String, val then: Int?, val tft: String)
+    val cases = listOf(
+        Case("Turn left onto MG Rd, then turn right", null, NavTurn.LEFT, "MG Rd", NavTurn.RIGHT, "Then R"),
+        Case("120 m · Turn left onto Swami Vidyananda Ln then turn right onto 5th Cross", null, NavTurn.LEFT, "Swami Vidyananda Ln", NavTurn.RIGHT, "Then R"),
+        Case("80 m · Turn right onto Ganesh Nagar Rd, then turn left", null, NavTurn.RIGHT, "Ganesh Nagar Rd", NavTurn.LEFT, "Then left"),
+        Case("Keep right at the fork, then keep left", null, NavTurn.KEEP_RIGHT, "", NavTurn.KEEP_LEFT, "Then kp L"),
+        Case("Turn right onto Old Harbor Hwy, then keep right to stay on Old Harbor Hwy", null, NavTurn.RIGHT, "Old Harbor Hwy", NavTurn.KEEP_RIGHT, "Then kp R"),
+        Case("Turn left, then make a U-turn", null, NavTurn.LEFT, "", NavTurn.U_TURN_RIGHT, "Then U"),
+        Case("Turn left onto Lake View Rd and then make a U\u2011turn", null, NavTurn.LEFT, "Lake View Rd", NavTurn.U_TURN_RIGHT, "Then U"),
+        Case("Turn right onto Church St, then at the roundabout, take the 2nd exit onto MG Rd", null, NavTurn.RIGHT, "Church St", NavTurn.ROUNDABOUT_LEFT, "Then rdbt"),
+        Case("Slight left onto NH 48, then take the exit toward Airport", null, NavTurn.SLIGHT_LEFT, "NH 48", NavTurn.RAMP_LEFT, "Then exit"),
+        Case("Turn left onto Ring Rd, then slight right", null, NavTurn.LEFT, "Ring Rd", NavTurn.SLIGHT_RIGHT, "Then R"),
+        Case("Turn left onto MG Rd; then turn sharp left onto Park St", null, NavTurn.LEFT, "MG Rd", NavTurn.SHARP_LEFT, "Then left"),
+        // Maps' separate text line under a "distance · instruction" title.
+        Case("200 m · Turn left onto MG Rd", "Then turn right", NavTurn.LEFT, "MG Rd", NavTurn.RIGHT, "Then R"),
+        // "then" inside a road name, or followed by no maneuver: never a hint, the road stays.
+        Case("Turn left onto Thenmozhi St", null, NavTurn.LEFT, "Thenmozhi St", null, "Thenmozhi"),
+        Case("Turn right onto Then Kudi Rd", null, NavTurn.RIGHT, "Then Kudi Rd", null, "Then Kudi"),
+        Case("Continue on Then Nagar Main Rd for 2 km", null, NavTurn.STRAIGHT, "Then Nagar Main Rd", null, "Then"),
+        Case("Turn left onto Swamy Thennarasu Rd, then Lakeview Gardens", null, NavTurn.LEFT, "Swamy Thennarasu Rd", null, "Thennarasu"),
+        // A clause without a hint (continue, arrival) is still cut from the road and the turn.
+        Case("Turn right onto Church St, then continue on MG Rd", null, NavTurn.RIGHT, "Church St", null, "Church St"),
+        Case("Turn left onto Riverside Rd, then your destination will be on the right", null, NavTurn.LEFT, "Riverside Rd", null, "Riverside"),
+        Case("Continue on NH 48 for 3 km, then turn left", null, NavTurn.STRAIGHT, "NH 48", NavTurn.LEFT, "Then left"),
+        // "then" followed by other wording: no hint, but the clause never leaks into the road.
+        Case("120 m · Turn left onto MG Rd then immediately turn right", null, NavTurn.LEFT, "MG Rd", null, "MG Rd"),
+        Case("120 m · Turn right onto Church St then follow signs for Airport", null, NavTurn.RIGHT, "Church St", null, "Church St"),
+        Case("120 m · Turn left onto MG Rd then right", null, NavTurn.LEFT, "MG Rd", null, "MG Rd"),
+        // No then clause: unchanged.
+        Case("Turn right onto Riverside Garden Rd", null, NavTurn.RIGHT, "Riverside Garden Rd", null, "Riverside")
+    )
+    for (c in cases) {
+        val cue = checkNotNull(parse(c.title, c.text)) { c.title }
+        eq(cue.turn, c.turn, "'${c.title}' turn"); eq(cue.road, c.road, "'${c.title}' road")
+        eq(cue.thenTurn, c.then, "'${c.title}' then"); eq(cue.tftRoad, c.tft, "'${c.title}' TFT road")
+        // The preview's text is the frame's road field, so the app shows what the scooter shows.
+        eq(cue.frame(now).roadText, c.tft, "'${c.title}' frame road")
+    }
+    eq(parse("Continue for 1.2 km, then turn left")?.distanceMeters, 1200, "the phrase distance still counts")
+    eq(parse("At the roundabout, take the 2nd exit, then keep left")?.let { it.turn to it.thenTurn }, NavTurn.ROUNDABOUT_LEFT to NavTurn.KEEP_LEFT, "roundabout then keep left")
+    // A clause on the current maneuver only: the turn symbol never comes from the second maneuver.
+    eq(parse("Continue straight, then turn left")?.turn, NavTurn.STRAIGHT, "straight then left")
+    eq(parse("Head north on Elm St, then turn right")?.let { Triple(it.turn, it.road, it.thenTurn) }, Triple(NavTurn.STRAIGHT, "Elm St", NavTurn.RIGHT), "head then right")
+
+    eq(MapsNavigationParser.splitThen("Turn left onto MG Rd, then turn right · Arrive 4:13 pm"), "Turn left onto MG Rd" to "turn right", "split cuts at the next separator")
+    eq(MapsNavigationParser.splitThen("Then keep left"), "" to "keep left", "a lone clause")
+    eq(MapsNavigationParser.splitThen("Turn left onto Thenmozhi St"), "Turn left onto Thenmozhi St" to null, "no clause")
+    eq(MapsNavigationParser.thenTurn("Then turn right"), null, "a lone clause is not a second maneuver")
+
+    // Same budget rules as road names: the longest wording that fits.
+    eq(RoadNames.thenHint(NavTurn.RIGHT, 9), "Then R", "right at 9")
+    eq(RoadNames.thenHint(NavTurn.RIGHT, 10), "Then right", "right at 10")
+    eq(RoadNames.thenHint(NavTurn.KEEP_LEFT, 11), "Then keep L", "keep left at 11")
+    eq(RoadNames.thenHint(NavTurn.KEEP_LEFT, 14), "Then keep left", "keep left at 14")
+    eq(RoadNames.thenHint(NavTurn.U_TURN_LEFT, 12), "Then U turn", "U-turn at 12")
+    eq(RoadNames.thenHint(NavTurn.ROUNDABOUT_RIGHT, 20), "Then rndabout", "budget clamps to the field")
+    eq(RoadNames.thenHint(NavTurn.STRAIGHT), null, "straight has no hint")
+    eq(RoadNames.thenHint(NavTurn.DESTINATION), null, "destination has no hint")
+    for (turn in 0x42..0x5A) for (budget in 1..16) {
+        val hint = RoadNames.thenHint(turn, budget) ?: continue
+        check(hint.startsWith("Then ") && hint.length <= RoadNames.FIELD_BYTES && hint.all { it in 'A'..'Z' || it in 'a'..'z' || it == ' ' }) { "hint '$hint'" }
+        if (budget >= RoadNames.TFT_CHARS) check(hint.length <= budget) { "hint '$hint' over budget $budget" }
+        eq(String(NavFrame.roadBytes(hint), Charsets.US_ASCII).trimEnd('\u0000'), hint, "'$hint' passes the field unchanged")
+    }
+    // The countdown keys on the road, not the hint: the same maneuver with and without "then" is one anchor.
+    eq(NavCountdown.key(checkNotNull(parse("Turn left onto MG Rd, then turn right"))), NavCountdown.key(checkNotNull(parse("Turn left onto MG Rd"))), "countdown key")
+}
+
 private fun countdown() {
     fun cue(title: String, progress: Int? = null, max: Int? = null) = checkNotNull(parse(title, progress = progress, max = max)) { title }
     fun d(maneuver: Int, remaining: Int?) = NavCountdown.Distances(maneuver, remaining)
@@ -175,6 +246,9 @@ private fun countdown() {
     eq(s.at(160.0), d(50, 50), "destination → remaining")
     s.update(cue("Turn right onto MG Rd", 3360, 3402), 170.0, 2_000)
     eq(s.at(170.0), d(0, 40), "new turn without distance → 0")
+    // A STRAIGHT with a turn right after it and no distance: the turn is imminent, so 0, not the route.
+    s.update(cue("Continue straight, then turn left", 3370, 3402), 180.0, 3_000)
+    eq(s.at(180.0), d(0, 30), "straight then turn without distance → 0")
     // Without progress there is no remaining distance, and STRAIGHT falls back to 0.
     val n = NavCountdown()
     n.update(cue("Head toward Ganesh Nagar Rd"), 0.0, 0)
@@ -289,8 +363,9 @@ private fun priorityLane() {
 fun main() {
     parser()
     roadNames()
+    thenHints()
     countdown()
     odometer()
     priorityLane()
-    println("Navigation checks passed (parser, road names, countdown, odometer, priority lane).")
+    println("Navigation checks passed (parser, road names, then hints, countdown, odometer, priority lane).")
 }

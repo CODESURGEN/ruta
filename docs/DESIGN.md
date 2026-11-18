@@ -32,7 +32,7 @@ Calm, precise, typographic, warm, obsessively detailed — on top of Material 3 
 5. **One signature moment:** on connect, the instrument cluster does a short "ignition sweep" (arcs sweep to full and
    settle on the real values, ~900 ms, skipped when animations are off). Subtle, not a show.
 6. **Microcopy** is short, human, sentence case, no jargon ("Scooter connected", "Couldn't reach the scooter",
-   "Wrong PIN — try again"). Empty states = one icon + one short line + at most one action.
+   "Scooter didn't accept this PIN"). Empty states = one icon + one short line + at most one action.
 7. **Avoid generic-app tells**: equal-weight grids of identical cards, redundant icon+text everywhere, centred
    paragraphs, explanatory text under every control, inconsistent radii, random accent colours.
 
@@ -200,9 +200,11 @@ mark, licences, the non-affiliation line).
 - **BMS:** reject temperatures < −30 °C (pack 1 sends a raw placeholder). Status 4 = Drive, 0/2 = Standby.
 - **Pairing:** if the scooter is not bonded, call createBond() before service discovery. While bonding, a
   high-priority receiver for ACTION_PAIRING_REQUEST answers for that device with the saved PIN so pairing is
-  silent; log the pairing variant, never the PIN. BOND_NONE after bonding → "Wrong PIN — try again" and the PIN
-  step reopens. If a system PIN dialog still appears (some OEM skins), show the saved PIN in a snackbar with a Copy
-  action. Already-bonded scooters skip the PIN entirely.
+  silent; log the pairing variant, never the PIN. Only a PIN Android actually delivered and the scooter then
+  refused is a wrong PIN ("Scooter didn't accept this PIN", the PIN step reopens); a PIN never delivered, a stale
+  bond (GATT 5/15/137 while paired → Bluetooth settings) and a lost link each get their own message
+  (PairingRules.bondOutcome / linkFailure). If a system PIN dialog still appears (some OEM skins), show the saved
+  PIN in a snackbar with a Copy action. Already-bonded scooters skip the PIN entirely.
 - **Storage:** PIN per scooter MAC encrypted with an Android Keystore AES-GCM key, in private SharedPreferences;
   nickname and last-used scooter stored plainly. Forget scooter deletes its PIN and settings and offers "Open
   Bluetooth settings" to unpair.

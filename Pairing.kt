@@ -30,8 +30,11 @@ sealed class PairingEvent {
     /** Android bonded with the scooter; connecting continues. */
     object Bonded : PairingEvent() { override fun toString() = "Bonded" }
 
-    /** The scooter refused the saved PIN (bonding fell back to none): ask for it again. */
-    object WrongPin : PairingEvent() { override fun toString() = "WrongPin" }
+    /**
+     * Pairing failed for [failure] (PairingRules.linkFailure / bondOutcome). Only
+     * [PairingFailure.WRONG_PIN] means the scooter refused a PIN it actually received.
+     */
+    data class BondFailed(val failure: PairingFailure) : PairingEvent()
 
     /**
      * Android shows its own pairing dialog anyway (setPin refused, a passkey variant, or an OEM skin
@@ -80,6 +83,8 @@ object PinResponder {
     private val callbacks = ArrayList<(PairingEvent) -> Unit>()
     private var safety: Runnable? = null
     private var requestSeen = false
+    /** What the answerer saw per scooter MAC in this attempt (reset when a new attempt arms, cleared on [disarm]). */
+    private val deliveries = HashMap<String, PinDelivery>()
 
     /** True while a PIN is armed. */
     val armed: Boolean get() = receiver != null
@@ -92,6 +97,12 @@ object PinResponder {
      * bonding means a higher-priority (OEM) component took the request and its own dialog asks.
      */
     fun requestSeen(mac: String): Boolean = isArmed(mac) && requestSeen
+
+    /** What this attempt's answerer saw for [mac]; nothing once disarmed (a later attempt never reads an old one). */
+    fun delivery(mac: String): PinDelivery = deliveries[PairingRules.normalizeMac(mac) ?: mac] ?: PinDelivery()
+
+    /** True when Android accepted our PIN for [mac] in this attempt: the scooter really received it. */
+    fun pinDelivered(mac: String): Boolean = delivery(mac).delivered
 
     fun arm(context: Context, mac: String, pin: String, onEvent: (PairingEvent) -> Unit) {
         Ui.assertMainThread("PinResponder.arm")
@@ -122,6 +133,7 @@ object PinResponder {
             return
         }
         app = appContext; receiver = answer; this.mac = key; this.pin = pin; requestSeen = false
+        deliveries.remove(key) // A new attempt: nothing requested or delivered yet.
         callbacks += onEvent
         restartSafety()
     }
@@ -133,6 +145,7 @@ object PinResponder {
         if (registered != null) runCatching { app?.unregisterReceiver(registered) }
         mac = null; pin = null
         callbacks.clear()
+        deliveries.clear()
     }
 
     /** Delivers a bond outcome for [mac] to the armed callbacks (when armed for it) and to [PairingEvents]. */
@@ -154,11 +167,14 @@ object PinResponder {
         val target = mac ?: return
         if (device == null || !device.address.equals(target, ignoreCase = true)) return
         requestSeen = true
-        val secret = pin ?: return
         val variant = intent.getIntExtra(BluetoothDevice.EXTRA_PAIRING_VARIANT, BluetoothDevice.ERROR)
+        val earlier = deliveries[target]?.delivered == true // Delivered once in this attempt stays delivered.
+        deliveries[target] = PinDelivery(requested = true, variant = variant, delivered = earlier)
+        val secret = pin ?: return
         DiagLog.append("Pairing request (${PairingRules.variantName(variant)})")
         if (PairingRules.answerable(variant)) {
             val accepted = try { device.setPin(secret.toByteArray(Charsets.US_ASCII)) } catch (_: Exception) { false }
+            deliveries[target] = PinDelivery(requested = true, variant = variant, delivered = accepted || earlier)
             if (accepted) {
                 if (receiver.isOrderedBroadcast) runCatching { receiver.abortBroadcast() }
                 DiagLog.append("Pairing: saved PIN supplied")

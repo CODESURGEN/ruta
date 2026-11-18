@@ -641,27 +641,29 @@ class OnboardingFlow(
         }
     }
 
-    private fun fail(error: String?, kind: Failure? = null) {
+    /** [pairing]: the classified pairing failure (from [PairingEvent.BondFailed], else read back from [error]). */
+    private fun fail(error: String?, kind: Failure? = null, pairing: PairingFailure? = PairingRules.failureFor(error)) {
         val reason = kind ?: when {
             !bluetoothAccess() -> Failure.NO_ACCESS
             !bluetoothOn() -> Failure.BLUETOOTH_OFF
-            error == PAIR_AGAIN -> Failure.BOND
+            pairing == PairingFailure.STALE_BOND -> Failure.BOND
             else -> Failure.LINK
         }
+        val name = selected?.name?.takeIf { it.isNotBlank() }
         failure = reason
         connectRequested = false
         val title = when (reason) {
             Failure.BLUETOOTH_OFF -> "Bluetooth is off"
             Failure.NO_ACCESS -> "Allow nearby devices"
             Failure.TIMEOUT -> "Took too long"
-            Failure.LINK -> error?.takeIf { it.isNotBlank() && it.length <= 40 } ?: "Couldn't reach the scooter"
-            Failure.BOND -> PAIR_AGAIN
+            Failure.LINK -> pairing?.let(PairingRules::failureTitle) ?: error?.takeIf { it.isNotBlank() && it.length <= 40 } ?: "Couldn't reach the scooter"
+            Failure.BOND -> PairingRules.failureTitle(PairingFailure.STALE_BOND)
         }
         val line = when (reason) {
             Failure.BLUETOOTH_OFF, Failure.NO_ACCESS -> null
             Failure.TIMEOUT -> "Keep it on and nearby"
-            Failure.LINK -> "Keep it on and close the official app"
-            Failure.BOND -> "Unpair it in Bluetooth settings, then scan again"
+            Failure.LINK -> pairing?.let { PairingRules.failureHint(it, name) } ?: "Keep it on and close the official app"
+            Failure.BOND -> PairingRules.failureHint(PairingFailure.STALE_BOND, name)
         }
         connecting.showFailure(reason, title, line)
         haptic(HapticFeedbackConstants.REJECT)
@@ -690,11 +692,15 @@ class OnboardingFlow(
         if (finished || mac != ours || step != OnboardingStep.CONNECTING) return
         attemptAt = Ui.uptimeMs() // The bond step is live: the backstop timeout counts from here.
         when (event) {
-            is PairingEvent.WrongPin -> {
+            // Only a PIN the scooter received and refused reopens the PIN step (field shakes); every
+            // other pairing failure says what happened on the Connecting step with its next step.
+            is PairingEvent.BondFailed -> if (event.failure == PairingFailure.WRONG_PIN) {
                 attempt++
                 connectRequested = false
                 go(OnboardingStep.PIN, forward = false)
-                pinPage.showError("Wrong PIN — try again")
+                pinPage.showError(PairingRules.failureTitle(PairingFailure.WRONG_PIN) + "\n" + PairingRules.failureHint(PairingFailure.WRONG_PIN))
+            } else {
+                fail(null, pairing = event.failure)
             }
             is PairingEvent.SystemDialog -> {
                 connecting.showPin(event.pin)

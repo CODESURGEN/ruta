@@ -22,6 +22,7 @@ import android.media.session.MediaSessionManager
 import android.media.session.PlaybackState
 import android.net.Uri
 import android.os.Build
+import android.os.Bundle
 import android.os.SystemClock
 import android.provider.ContactsContract
 import android.provider.Settings
@@ -189,6 +190,15 @@ object PhoneBridge {
     fun addListener(listener: () -> Unit) { listeners += listener }
     fun removeListener(listener: () -> Unit) { listeners -= listener }
     private fun changed() = listeners.toList().forEach { it() }
+
+    /**
+     * New-message listeners ("Show who messaged", [MessageAlerter]): called on the main thread with the
+     * app and sender of a message notification that is new (not a re-post), never its text. Names are
+     * read only while someone listens.
+     */
+    private val messageListeners = linkedSetOf<(MessageNotice) -> Unit>()
+    fun addMessageListener(listener: (MessageNotice) -> Unit) { messageListeners += listener }
+    fun removeMessageListener(listener: (MessageNotice) -> Unit) { messageListeners -= listener }
 
     /** Starts tracking for [owner] (idempotent per owner). Main thread. */
     fun start(context: Context, owner: Any) {
@@ -711,6 +721,9 @@ object PhoneBridge {
     fun listenerConnected(service: NotificationListenerService) = Ui.run {
         val all = runCatching { service.activeNotifications.orEmpty() }.getOrDefault(emptyArray())
         callNotification = all.lastOrNull { isCallNotification(it) }?.let { it.key to title(it) }
+        // Messages already on screen are not new: only a later post with a newer message alerts.
+        messageStamps.clear()
+        all.forEach { messageStamps[it.key] = messageStamp(it) }
         recount(service, all)
         app?.let { if (!mediaSessionsAvailable) connectMedia(it) }
     }
@@ -725,13 +738,16 @@ object PhoneBridge {
             callNotification = sbn.key to title(sbn)
             if (call.inCall && call.display == null) setCall(call)
         }
-        if (countable(service, sbn) != null) recount(service)
+        val kind = countable(service, sbn)
+        if (kind != null) recount(service)
+        if (kind == Countable.MESSAGE) announceMessage(service, sbn)
         // A new player posted its media notification before the sessions callback could be set up.
         if (!mediaSessionsAvailable && sbn.notification.extras.containsKey(Notification.EXTRA_MEDIA_SESSION)) app?.let(::connectMedia)
     }
 
     fun notificationRemoved(service: NotificationListenerService, sbn: StatusBarNotification) = Ui.run {
         if (callNotification?.first == sbn.key) callNotification = null
+        messageStamps.remove(sbn.key)
         if (countable(service, sbn) != null) recount(service)
     }
 
@@ -775,6 +791,50 @@ object PhoneBridge {
         if (category == Notification.CATEGORY_MESSAGE) return Countable.MESSAGE
         val sms = defaultSms ?: runCatching { Telephony.Sms.getDefaultSmsPackage(context) }.getOrNull().orEmpty().also { defaultSms = it }
         return if ((pkg in messengers || pkg == sms) && title(sbn).isNotEmpty()) Countable.MESSAGE else null
+    }
+
+    /** Latest message time per notification key (no names): a re-post with the same time is not a new message. */
+    private val messageStamps = object : LinkedHashMap<String, Long>() {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Long>?) = size > 200
+    }
+    private const val MESSAGE_FRESH_MS = 60_000L
+
+    /** Newest MessagingStyle message time, else the notification's `when`, else its post time. */
+    @Suppress("DEPRECATION")
+    private fun messageStamp(sbn: StatusBarNotification): Long {
+        val messages = sbn.notification.extras.getParcelableArray(Notification.EXTRA_MESSAGES)
+        val newest = messages?.mapNotNull { (it as? Bundle)?.getLong("time", 0L)?.takeIf { t -> t > 0 } }?.maxOrNull()
+        return newest ?: sbn.notification.`when`.takeIf { it > 0 } ?: sbn.postTime
+    }
+
+    /**
+     * "Show who messaged": a message notification that is new (a newer stamp than this key had, and
+     * from the last minute) goes to the message listeners as app + sender. Group summaries are
+     * skipped (their child carries the sender). Reads only the title, the conversation title and
+     * the group flag, never EXTRA_TEXT or the messages' text. Only known messengers and the default
+     * SMS app: other apps' CATEGORY_MESSAGE titles are often content ("Rs 5,000 credited"), so they
+     * only count.
+     */
+    private fun announceMessage(service: NotificationListenerService, sbn: StatusBarNotification) {
+        val notification = sbn.notification
+        val pkg = sbn.packageName
+        val sms = defaultSms ?: runCatching { Telephony.Sms.getDefaultSmsPackage(service) }.getOrNull().orEmpty().also { defaultSms = it }
+        if (pkg !in messengers && pkg != sms) return
+        if (notification.flags and Notification.FLAG_GROUP_SUMMARY != 0) return
+        val stamp = messageStamp(sbn)
+        val previous = messageStamps.put(sbn.key, stamp)
+        if (previous != null && stamp <= previous) return
+        if (System.currentTimeMillis() - stamp > MESSAGE_FRESH_MS) return
+        if (messageListeners.isEmpty()) return
+        val extras = notification.extras
+        val label = runCatching { service.packageManager.let { pm -> pm.getApplicationLabel(pm.getApplicationInfo(pkg, 0)).toString() } }.getOrNull()
+        val notice = MessageAlerts.notice(
+            pkg, label, pkg == sms,
+            title = extras.getCharSequence(Notification.EXTRA_TITLE)?.toString(),
+            conversationTitle = extras.getCharSequence(Notification.EXTRA_CONVERSATION_TITLE)?.toString(),
+            group = extras.getBoolean(Notification.EXTRA_IS_GROUP_CONVERSATION, false)
+        )
+        messageListeners.toList().forEach { it(notice) }
     }
 
     /** How many calls/messages one notification stands for ("3 missed calls", MessagingStyle history, badge number). */

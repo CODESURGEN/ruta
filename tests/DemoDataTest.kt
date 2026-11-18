@@ -201,7 +201,7 @@ private fun navigating() {
     val start = NOW + 60_000
     val clock = { time: Long -> ((time / 3_600_000L) % 24).toInt() to ((time / 60_000L) % 60).toInt() }
     val route = DemoData.ROUTE
-    check(route.map { it.turn } == listOf(NavTurn.LEFT, NavTurn.ROUNDABOUT_RIGHT, NavTurn.STRAIGHT, NavTurn.DESTINATION))
+    check(route.map { it.turn } == listOf(NavTurn.LEFT, NavTurn.ROUNDABOUT_RIGHT, NavTurn.LEFT, NavTurn.STRAIGHT, NavTurn.DESTINATION))
     check(route.first().road == "Riverside Rd" && route.first().lengthM == 400.0)
     check(abs(route.sumOf { it.lengthM } - DemoData.ROUTE_M) < 1e-6 && route.all { it.lengthM >= 300 })
     check(DemoData.ROUTE_M in 5_600.0..7_200.0) { "route ${DemoData.ROUTE_M} m" }
@@ -243,7 +243,7 @@ private fun navigating() {
         }
         t += 1000
     }
-    check(seen == listOf(NavTurn.LEFT, NavTurn.ROUNDABOUT_RIGHT, NavTurn.STRAIGHT, NavTurn.DESTINATION)) { "cues: $seen" }
+    check(seen == listOf(NavTurn.LEFT, NavTurn.ROUNDABOUT_RIGHT, NavTurn.LEFT, NavTurn.STRAIGHT, NavTurn.DESTINATION)) { "cues: $seen" }
     check(previousRemaining == 0 && previousManeuver == 0) { "never arrived: $previousRemaining m left" }
     check(tightAll) { "spare $minSpare..$maxSpare km is not a steady Tight" }
     check(DemoData.navStartSoc(k) in 6.0..14.0) { "navigation charge ${DemoData.navStartSoc(k)}" }
@@ -256,6 +256,14 @@ private fun navigating() {
     // The frame the Navigate preview shows.
     val frame = first.cue.frame(java.time.LocalDateTime.of(2025, 11, 17, 10, 0), first.maneuverM, first.remainingM)
     check(frame.active && frame.turn == NavTurn.LEFT && frame.distanceMeters == 400 && frame.roadText == "Riverside")
+    check(first.cue.thenTurn == null)
+    // The roundabout's cue announces the left turn right after it: the TFT shows "Then left" instead of the road.
+    val roundabout = DemoData.live(DemoScenario.NAVIGATING, start, start + (DemoData.timeAt(DemoData.distanceAt(DemoData.PREROLL_S) + 600.0) - DemoData.PREROLL_S).let { (it * 1000).toLong() }, h, clock).nav!!
+    check(roundabout.cue.turn == NavTurn.ROUNDABOUT_RIGHT && roundabout.cue.thenTurn == NavTurn.LEFT) { "cue at 600 m: ${roundabout.cue}" }
+    val roundaboutFrame = roundabout.cue.frame(java.time.LocalDateTime.of(2025, 11, 17, 10, 0), roundabout.maneuverM, roundabout.remainingM)
+    check(roundaboutFrame.roadText == "Then left" && roundabout.cue.road == "Market St") { "roundabout frame '${roundaboutFrame.roadText}'" }
+    // Every other demo cue keeps its road.
+    check(DemoData.ROUTE.count { MapsNavigationParser.thenTurn(it.instruction) != null } == 1)
 }
 
 private fun charging() {

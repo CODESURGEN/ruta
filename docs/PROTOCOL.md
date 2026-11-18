@@ -173,7 +173,10 @@ active bit cleared, 12 AM, distance 0, straight and an empty road.
 
 Ruta builds these frames from Google Maps' navigation notification (read by its notification
 listener), counts the distance down between Maps updates with the phone's location, and shortens
-road names to fit the display (`RoadNames.kt`).
+road names to fit the display (`RoadNames.kt`). When Maps announces a second maneuver right after
+the current one ("Turn left onto X, then turn right"), the road field carries a short hint instead
+of the road ("Then R", "Then left", "Then kp L", "Then rdbt", "Then exit", "Then U", the longest
+wording that fits the same width budget); byte 7 (next turn symbol) stays straight.
 
 ### Music state (0x0304), 3 bytes
 
@@ -183,6 +186,14 @@ Byte 2 bit 0: a media session is active. Not sent during calls.
 ### Song (0x0305), 28 bytes
 
 Title in bytes 0–13, artist (or album) in bytes 14–27. Twenty-eight zero bytes clear the song.
+
+**Sender alert (Ruta's own reuse, opt-in).** With "Show who messaged" on, while no media is playing and
+no call is up, Ruta writes a new message's app as the title and its sender (contact or group name, or
+"New message"; never the text or a phone number) as the artist, in the same 28-byte layout, then
+restores the previous song frame (empty, or the paused track) after about 8 s, as soon as music starts
+or a call rings, or on the next handlebar play/pause, which it consumes. At most one alert per 10 s;
+messages in between collapse to the latest sender. `0x0304` is not changed for the alert; whether the
+display shows `0x0305` text while no media session is active is still to be confirmed on a scooter.
 
 ### Handlebar buttons (0x0306), indications of 3 bytes
 

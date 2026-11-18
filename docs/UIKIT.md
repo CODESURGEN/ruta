@@ -498,7 +498,7 @@ live, silentSince, deviceName, address, error, connectedAt), `linkPhase`, `recon
 `reading(pack, metric)`, `battery: BatterySnapshot` (total/pack1/pack2 PackSnapshot{soc, health, energy,
 temperatureC, status, updatedAt}, fresh, updatedAt, imbalance, hasData), `vehicle: VehicleState?`, `tcuInfo`,
 `range: RangeEstimate?` (km, estimated, kmPerPercent, learned — show kmPerPercent as Efficiency, "est." until learned), `driveState: DriveState` (label + icon), `ride: RideState`,
-`speedKmh`, `lastRide`, `navPreview: NavPreview` (frame, instruction, display, enabled, testRunning, error,
+`speedKmh`, `lastRide`, `navPreview: NavPreview` (frame, instruction, road, thenTurn, display, enabled, testRunning, error,
 listenerConnected, updatedAt, hasRoute), `phone` (PhoneBridge), `mediaState: MediaState?` and
 `callState: CallState` (what to *show*: the phone's media session / call, or the demo's; read these, not
 `phone.media` / `phone.call`), `musicFeed`, `callFeed`, `scooters`, `selectedScooter`, `bluetoothEnabled`,
@@ -523,9 +523,9 @@ BLOCKED → button opens settings, NOT_NEEDED), `Feature` (DIRECTIONS, MUSIC, CA
 
 ```kotlin
 // Alerts.kt — rider alerts ("Ride alerts" channel, IMPORTANCE_DEFAULT) and their More › Alerts switches
-enum class AlertKind { RANGE, CHARGE_TARGET, CHARGE_STOPPED, PARKING }
+enum class AlertKind { RANGE, CHARGE_TARGET, CHARGE_STOPPED, PARKING, MESSAGE_SENDER }
 enum class AlertAccess { ON, ASK, SETTINGS }
-Alerts.enabled(ctx, kind); Alerts.setEnabled(ctx, kind, on)        // defaults: all on except CHARGE_STOPPED
+Alerts.enabled(ctx, kind); Alerts.setEnabled(ctx, kind, on)        // defaults: all on except CHARGE_STOPPED and MESSAGE_SENDER (writes to the scooter display, posts nothing)
 Alerts.chargeTarget(ctx) /* 80|90|100 */; Alerts.setChargeTarget(ctx, percent); Alerts.TARGETS
 Alerts.rangeWarning(ctx, verdict); Alerts.chargeReached(ctx, percent, rangeKm, estimated = true)
 Alerts.chargeStopped(ctx, percent); Alerts.clear(ctx, kind)

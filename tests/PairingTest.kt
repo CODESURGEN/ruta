@@ -10,6 +10,8 @@ fun main() {
     signal()
     aggregator()
     bonds()
+    linkFailures()
+    failureCopy()
     variants()
     plan()
     println("PairingTest: all checks passed")
@@ -89,19 +91,96 @@ private fun aggregator() {
 
 private fun bonds() {
     val r = PairingRules
-    check(r.bondOutcome(r.BOND_BONDING, r.BOND_BONDED, true) == BondOutcome.BONDED)
-    check(r.bondOutcome(r.BOND_NONE, r.BOND_BONDED, false) == BondOutcome.BONDED)
-    check(r.bondOutcome(r.BOND_BONDING, r.BOND_NONE, true) == BondOutcome.WRONG_PIN)
-    check(r.bondOutcome(r.BOND_BONDING, r.BOND_NONE, false) == BondOutcome.REJECTED)
-    check(r.bondOutcome(r.BOND_NONE, r.BOND_NONE, true) == BondOutcome.REJECTED)
-    check(r.bondOutcome(r.BOND_NONE, r.BOND_BONDING, true) == BondOutcome.PENDING)
-    // Unbond reason: auth failed / rejected = wrong PIN; cancelled = not a PIN problem; unknown keeps the rule.
-    check(r.bondOutcome(r.BOND_BONDING, r.BOND_NONE, true, r.UNBOND_AUTH_FAILED) == BondOutcome.WRONG_PIN)
-    check(r.bondOutcome(r.BOND_BONDING, r.BOND_NONE, true, r.UNBOND_AUTH_REJECTED) == BondOutcome.WRONG_PIN)
-    check(r.bondOutcome(r.BOND_BONDING, r.BOND_NONE, true, r.UNBOND_AUTH_CANCELED) == BondOutcome.REJECTED)
-    check(r.bondOutcome(r.BOND_BONDING, r.BOND_NONE, true, r.UNBOND_REMOTE_AUTH_CANCELED) == BondOutcome.REJECTED)
-    check(r.bondOutcome(r.BOND_BONDING, r.BOND_NONE, true, 4) == BondOutcome.WRONG_PIN)
-    check(r.bondOutcome(r.BOND_BONDING, r.BOND_NONE, false, r.UNBOND_AUTH_FAILED) == BondOutcome.REJECTED)
+    val wrong = BondOutcome.Failed(PairingFailure.WRONG_PIN)
+    val noRequest = BondOutcome.Failed(PairingFailure.NO_PIN_REQUEST)
+    val rejected = BondOutcome.Failed(PairingFailure.REJECTED)
+    val lost = BondOutcome.Failed(PairingFailure.LINK_LOST)
+    check(r.bondOutcome(r.BOND_BONDING, r.BOND_BONDED, true, true) == BondOutcome.Bonded)
+    check(r.bondOutcome(r.BOND_NONE, r.BOND_BONDED, false, false) == BondOutcome.Bonded)
+    check(r.bondOutcome(r.BOND_NONE, r.BOND_BONDING, true, false) == BondOutcome.Pending)
+    // Wrong PIN only when our PIN was delivered and the scooter then refused it.
+    check(r.bondOutcome(r.BOND_BONDING, r.BOND_NONE, true, true) == wrong)
+    check(r.bondOutcome(r.BOND_BONDING, r.BOND_NONE, true, true, r.UNBOND_AUTH_FAILED) == wrong)
+    check(r.bondOutcome(r.BOND_BONDING, r.BOND_NONE, true, true, r.UNBOND_AUTH_REJECTED) == wrong)
+    check(r.bondOutcome(r.BOND_BONDING, r.BOND_NONE, true, true, r.UNBOND_REMOTE_DEVICE_DOWN) == wrong) // Link dropped right after delivery.
+    // Armed but never delivered (OEM dialog, passkey confirmation, request never arrived): not a PIN verdict.
+    check(r.bondOutcome(r.BOND_BONDING, r.BOND_NONE, true, false) == noRequest)
+    check(r.bondOutcome(r.BOND_BONDING, r.BOND_NONE, true, false, r.UNBOND_AUTH_FAILED) == noRequest)
+    check(r.bondOutcome(r.BOND_BONDING, r.BOND_NONE, true, false, r.UNBOND_REMOTE_DEVICE_DOWN) == noRequest)
+    // Delivered but timed out: the link, not the PIN.
+    check(r.bondOutcome(r.BOND_BONDING, r.BOND_NONE, true, true, r.UNBOND_AUTH_TIMEOUT) == lost)
+    check(r.bondOutcome(r.BOND_BONDING, r.BOND_NONE, true, true, r.UNBOND_DISCOVERY_IN_PROGRESS) == lost)
+    // Delivered, then the radio link dropped first (Android reports that as auth failed): the link, not the PIN.
+    for (code in listOf(8, 62, 133, 147)) {
+        check(r.bondOutcome(r.BOND_BONDING, r.BOND_NONE, true, true, r.UNBOND_AUTH_FAILED, dropCode = code) == lost)
+        check(r.bondOutcome(r.BOND_BONDING, r.BOND_NONE, true, true, dropCode = code) == lost)
+        check(r.bondOutcome(r.BOND_BONDING, r.BOND_NONE, true, false, r.UNBOND_AUTH_FAILED, dropCode = code) == noRequest)
+    }
+    // The scooter ending the link (19/22) or an auth code after delivery is still a refused PIN.
+    for (code in listOf(19, 22, 5, 137)) check(r.bondOutcome(r.BOND_BONDING, r.BOND_NONE, true, true, r.UNBOND_AUTH_FAILED, dropCode = code) == wrong)
+    // Cancelled (rider or scooter), no PIN armed, or never bonding: rejected.
+    check(r.bondOutcome(r.BOND_BONDING, r.BOND_NONE, true, true, r.UNBOND_AUTH_CANCELED) == rejected)
+    check(r.bondOutcome(r.BOND_BONDING, r.BOND_NONE, true, true, r.UNBOND_REMOTE_AUTH_CANCELED) == rejected)
+    check(r.bondOutcome(r.BOND_BONDING, r.BOND_NONE, true, false, r.UNBOND_AUTH_CANCELED) == rejected)
+    check(r.bondOutcome(r.BOND_BONDING, r.BOND_NONE, false, false) == rejected)
+    check(r.bondOutcome(r.BOND_BONDING, r.BOND_NONE, false, false, r.UNBOND_AUTH_FAILED) == rejected)
+    check(r.bondOutcome(r.BOND_NONE, r.BOND_NONE, true, true) == rejected)
+}
+
+private fun linkFailures() {
+    val r = PairingRules
+    val none = r.BOND_NONE; val bonding = r.BOND_BONDING; val bonded = r.BOND_BONDED
+    // Paired on the phone + an auth/encryption failure: the scooter forgot the key.
+    for (code in listOf(5, 15, 137)) {
+        check(r.linkFailure(bonded, pairing = false, sawBonding = false, pinDelivered = false, gattCode = code) == PairingFailure.STALE_BOND)
+        check(r.linkFailure(bonded, pairing = true, sawBonding = true, pinDelivered = true, gattCode = code) == PairingFailure.STALE_BOND)
+    }
+    check(r.linkFailure(bonded, false, false, false, 8) == null && r.linkFailure(bonded, false, false, false, 133) == null)
+    // Not pairing and not paired: an ordinary link failure.
+    check(r.linkFailure(none, pairing = false, sawBonding = false, pinDelivered = false, gattCode = 5) == null)
+    check(r.linkFailure(none, false, false, false, 8) == null)
+    // GATT 5/137 not paired: wrong PIN only when it was delivered.
+    check(r.linkFailure(none, pairing = true, sawBonding = true, pinDelivered = true, gattCode = 5) == PairingFailure.WRONG_PIN)
+    check(r.linkFailure(none, true, false, true, 137) == PairingFailure.WRONG_PIN)
+    check(r.linkFailure(bonding, true, true, true, 137) == PairingFailure.WRONG_PIN)
+    check(r.linkFailure(none, true, true, true, 19) == PairingFailure.WRONG_PIN) // Delivered, scooter ended the link, back to not paired.
+    check(r.linkFailure(none, true, true, true, 22) == PairingFailure.WRONG_PIN)
+    // Delivered, then a link-loss code: the radio dropped, not the PIN.
+    for (code in listOf(8, 62, 133, 147)) check(r.linkFailure(none, true, true, true, code) == PairingFailure.LINK_LOST)
+    check(r.linkFailure(none, pairing = true, sawBonding = true, pinDelivered = false, gattCode = 5) == PairingFailure.NO_PIN_REQUEST)
+    check(r.linkFailure(none, true, false, false, 137) == PairingFailure.NO_PIN_REQUEST)
+    check(r.linkFailure(none, true, true, false, 8) == PairingFailure.NO_PIN_REQUEST)
+    check(r.linkFailure(bonding, true, true, false, 19) == PairingFailure.NO_PIN_REQUEST)
+    // Delivered but still bonding with a plain link code: the link, not the PIN.
+    check(r.linkFailure(bonding, true, true, true, 8) == PairingFailure.LINK_LOST)
+    // Link dropped before bonding started.
+    check(r.linkFailure(none, pairing = true, sawBonding = false, pinDelivered = false, gattCode = 8) == PairingFailure.LINK_LOST)
+    check(r.linkFailure(none, true, false, false, 133) == PairingFailure.LINK_LOST)
+}
+
+private fun failureCopy() {
+    val r = PairingRules
+    check(r.failureTitle(PairingFailure.WRONG_PIN) == "Scooter didn't accept this PIN")
+    check(r.failureHint(PairingFailure.WRONG_PIN) == "Open the Vida app and copy the PIN it shows now")
+    check(r.failureTitle(PairingFailure.NO_PIN_REQUEST) == "Pairing didn't finish")
+    check(r.failureHint(PairingFailure.NO_PIN_REQUEST) == "If Android asked for a PIN, type it there. Close the Vida app and try again")
+    check(r.failureTitle(PairingFailure.STALE_BOND) == "Old Bluetooth pairing")
+    check(r.failureHint(PairingFailure.STALE_BOND, "HMC_000000") == "Forget HMC_000000 in Bluetooth settings, then pair again")
+    check(r.failureHint(PairingFailure.STALE_BOND, " ") == "Forget the scooter in Bluetooth settings, then pair again")
+    check(r.failureTitle(PairingFailure.LINK_LOST) == "Lost the scooter while pairing")
+    check(r.failureHint(PairingFailure.LINK_LOST) == "Close the Vida app, keep the scooter on and near, and try again")
+    // Titles are the connection's status lines and map back; titles are distinct and short enough for one line.
+    for (f in PairingFailure.entries) {
+        check(r.failureFor(r.failureTitle(f)) == f)
+        check(r.failureTitle(f).length <= 40)
+    }
+    check(r.failureFor(null) == null && r.failureFor("Couldn't reach the scooter") == null)
+    // Diagnostics say what was seen and never carry a PIN.
+    val line = r.diagnostic(PairingFailure.NO_PIN_REQUEST, PinDelivery(requested = true, variant = r.VARIANT_PASSKEY_CONFIRMATION), r.BOND_NONE, reason = 1, gattCode = 137)
+    check(line == "Pairing failed: NO_PIN_REQUEST (request passkey confirmation, PIN not delivered, bond none, reason 1, GATT 137)") { line }
+    check(r.diagnostic(PairingFailure.LINK_LOST, PinDelivery(), r.BOND_BONDING) ==
+        "Pairing failed: LINK_LOST (request not seen, PIN not delivered, bond bonding, reason none, GATT none)")
+    check(r.diagnostic(PairingFailure.WRONG_PIN, PinDelivery(true, r.VARIANT_PIN, true), r.BOND_NONE).contains("request PIN, PIN delivered"))
 }
 
 private fun variants() {

@@ -12,10 +12,18 @@ data class MapsCue(
     val arrivalHour24: Int?,
     val arrivalMinute: Int?,
     val remainingMeters: Int?,
-    val rerouting: Boolean
+    val rerouting: Boolean,
+    /**
+     * The second of two back-to-back maneuvers ("Turn left onto X, then turn right" → [NavTurn.RIGHT]),
+     * only when it has a "Then …" hint ([RoadNames.thenHint]); null otherwise.
+     */
+    val thenTurn: Int? = null
 ) {
-    /** [road] as the TFT gets it ([RoadNames.fit]): "Riverside Garden Rd" → "Riverside". */
-    val tftRoad: String by lazy { RoadNames.fit(road) }
+    /**
+     * The 0x0303 road text: the "Then …" hint when a second maneuver follows right after this one
+     * ("Then left"), else [road] fitted for the TFT ([RoadNames.fit]: "Riverside Garden Rd" → "Riverside").
+     */
+    val tftRoad: String by lazy { thenTurn?.let { RoadNames.thenHint(it) } ?: RoadNames.fit(road) }
 
     /**
      * Cluster frame; remaining time is derived from the arrival clock at [now]. [distanceMeters]
@@ -49,6 +57,11 @@ data class MapsCue(
  * [NavCountdown] decides. Distance sources, most explicit first: a leading title distance, then
  * shortCriticalText, then a phrase ("for 1.2 km", "in 300 m", "after 200 m"). Older builds put the
  * distance in the title and the instruction in the text; both are handled. English only.
+ *
+ * Back-to-back maneuvers ("Turn left onto X, then turn right", "…, then keep left", or a separate
+ * "Then turn right" text line): the "then" clause is cut before the turn and road are read, and the
+ * second maneuver becomes [MapsCue.thenTurn] ([thenTurn]). A clause counts only when "then" is a word
+ * followed by maneuver wording, so "Thenmozhi St" and "onto Then Kudi Rd" stay road names.
  */
 object MapsNavigationParser {
     private val DISTANCE = Regex("""^\s*(\d+(?:[.,]\d+)?)\s*(km|m|mi|ft|yd)\b""", RegexOption.IGNORE_CASE)
@@ -75,6 +88,18 @@ object MapsNavigationParser {
     private val DESTINATION = Regex(
         """\byour destination\b|\bdestination will be on\b|\byou have arrived\b|\barrived? at\b|\b(?:is|will be) on (?:the|your) (?:left|right)\.?$|^(?:you(?:'|’)ve\s+)?arrived\b"""
     )
+
+    /**
+     * Start of a "then" clause: ", then turn right", " and then keep left", " · Then make a U-turn",
+     * or "Then …" at the very start (Maps' separate text line). "then" must be a whole word followed by
+     * maneuver wording, so a road named "Then Kudi Rd" or "Thenmozhi St" never matches.
+     */
+    private val THEN_CLAUSE = Regex(
+        """(?:\s*[,;]\s*|\s+[·•|]\s+|\s+|^)(?:and\s+)?then\b[\s,]*(?=(?:turn|keep|make|take|bear|slight|sharp|stay|continue|go|merge|exit|enter|use|head|at\s+the|u[- ]?turn|you(?:'|’)ll|arrive|your\s+destination|the\s+destination)\b)""",
+        RegexOption.IGNORE_CASE
+    )
+    /** The second maneuver ends at the next notification separator. */
+    private val CLAUSE_END = Regex("""\s+[·•|]\s+""")
 
     /**
      * Maps/Android use U+00A0 / U+202F spaces (e.g. "4:13 pm", "120 m") and U+2011
@@ -106,6 +131,8 @@ object MapsNavigationParser {
         }
         val phrase = phraseDistance(fullInstruction) ?: text?.let(::phraseDistance)
         val instruction = fullInstruction.replace(LEADING_PHRASE, "").replaceFirstChar { it.uppercaseChar() }
+        // "120 m · Turn left onto X" in the title and "Then turn right" alone in the text.
+        val separateThen = if (parts.size == 2 && distanceTitle != null) text?.let(::splitThen)?.takeIf { it.first.isBlank() }?.second else null
         val distance = distanceTitle ?: shortCriticalText?.let(::distanceMeters) ?: phrase
         val lower = instruction.lowercase(Locale.ROOT)
         val rerouting = REROUTING.containsMatchIn(lower)
@@ -117,9 +144,38 @@ object MapsNavigationParser {
         return MapsCue(
             turn = turn ?: NavTurn.STRAIGHT, distanceMeters = distance, instruction = instruction,
             road = road(instruction), arrivalHour24 = hour, arrivalMinute = minute,
-            remainingMeters = remaining, rerouting = rerouting
+            remainingMeters = remaining, rerouting = rerouting,
+            thenTurn = thenTurn(instruction) ?: separateThen?.let(::hintTurn)
         )
     }
+
+    /**
+     * ("Turn left onto X", "turn right") for "Turn left onto X, then turn right"; ([value], null)
+     * without a then clause. A [value] that is only a clause ("Then keep left") gives ("", "keep left").
+     */
+    fun splitThen(value: String): Pair<String, String?> {
+        val match = THEN_CLAUSE.find(value) ?: return value to null
+        val clause = value.substring(match.range.last + 1).split(CLAUSE_END).first().trim().trimEnd('.')
+        if (clause.isEmpty()) return value to null
+        return value.substring(0, match.range.first).trim() to clause
+    }
+
+    /** [instruction] without its then clause (the maneuver the turn symbol and road describe). */
+    fun current(instruction: String): String = splitThen(instruction).first.ifBlank { instruction }
+
+    /**
+     * The second maneuver of [instruction] as a [NavTurn] code, when it has a "Then …" hint
+     * ([RoadNames.thenHint]: turns, U-turns, keep/fork, roundabouts, exits); null without a then clause,
+     * or for one that is no hint ("then continue", "then your destination is on the left").
+     */
+    fun thenTurn(instruction: String): Int? {
+        val (head, clause) = splitThen(normalise(instruction) ?: return null)
+        if (head.isBlank() || clause == null) return null
+        return hintTurn(clause)
+    }
+
+    private fun hintTurn(clause: String): Int? =
+        turnFor(clause.lowercase(Locale.ROOT))?.takeIf { RoadNames.thenHint(it) != null }
 
     /**
      * A leading distance ("120 m", "1.2 km", "1,2 km", "1,200 m", "120 m") in metres. A comma
@@ -159,7 +215,7 @@ object MapsNavigationParser {
      * Order matters (e.g. "sharp left" before "left"). India drives on the left: U-turns are clockwise.
      */
     fun turnFor(lower: String): Int? {
-        val core = lower.replace(SIDE_NOTE, "").trim()
+        val core = current(lower.replace(SIDE_NOTE, "").trim())
         val maneuver = core.replace(LEADING_LANDMARK, "").split(NAME_CLAUSE).first()
         fun has(words: String) = Regex("""\b(?:$words)\b""").containsMatchIn(maneuver)
         val left = has("left"); val right = has("right")
@@ -187,9 +243,9 @@ object MapsNavigationParser {
         }
     }
 
-    /** Next road: "onto X", then "on X", "toward X", "to X"; side notes, trailing clauses and "/" aliases dropped. */
+    /** Next road: "onto X", then "on X", "toward X", "to X"; side notes, then clauses, trailing clauses and "/" aliases dropped. */
     fun road(instruction: String): String {
-        val text = instruction.replace(SIDE_NOTE, "").trim()
+        val text = current(instruction.replace(SIDE_NOTE, "").trim())
         if (DESTINATION.containsMatchIn(text.lowercase(Locale.ROOT))) return ""
         fun after(keyword: String): String? {
             val match = Regex("""\b$keyword\s++(?!(?:the|your)\s+(?:left|right)\b)(.+)$""", RegexOption.IGNORE_CASE).find(text) ?: return null
@@ -203,5 +259,6 @@ object MapsNavigationParser {
     /** Log line for one update. [raw] is Maps text, so it is never used as a format string (a '%' would throw). */
     fun describe(cue: MapsCue?, raw: String): String =
         if (cue == null) "Maps (unparsed): $raw"
-        else "Maps: $raw → turn 0x${cue.turn.toString(16).uppercase(Locale.ROOT).padStart(2, '0')}, ${cue.distanceMeters ?: "?"} m, road '${cue.road}'"
+        else "Maps: $raw → turn 0x${cue.turn.toString(16).uppercase(Locale.ROOT).padStart(2, '0')}, ${cue.distanceMeters ?: "?"} m, road '${cue.road}'" +
+            (cue.thenTurn?.let { " · '${cue.tftRoad}'" } ?: "")
 }

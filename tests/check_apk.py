@@ -2,7 +2,9 @@
 icon, logcat tag, no pre-rename names), resources (Material Symbols icons, licence notice, theme),
 signing, alignment.
 
-Usage: python3 tests/check_apk.py dist/ruta-1.0.1.apk   (build.sh runs it on build/signed.apk)
+Usage: python3 tests/check_apk.py dist/ruta-1.0.2.apk   (build.sh runs it on build/signed.apk)
+       python3 tests/check_apk.py --unsigned dist/ruta-1.0.2-unsigned.apk   (bash build.sh --unsigned:
+       everything except the signature; the APK must carry none, F-Droid signs it)
 Artifact verification only; it does not replace installing and launching on the phone.
 """
 import os
@@ -17,8 +19,10 @@ PACKAGE = "dev.codesurgen.ruta"
 CODE_PACKAGE = "dev.codesurgen.ruta"   # Kotlin package of the components
 LABEL = "Ruta"
 LISTENER_LABEL = "Ruta directions & music"   # Settings > Notification access
-VERSION_CODE, VERSION_NAME = "101", "1.0.1"
+VERSION_CODE, VERSION_NAME = "102", "1.0.2"
 APK_FILE = f"ruta-{VERSION_NAME}.apk"  # what build.sh publishes to dist/
+UNSIGNED_APK_FILE = f"ruta-{VERSION_NAME}-unsigned.apk"  # bash build.sh --unsigned
+APK_SIG_BLOCK_MAGIC = b"APK Sig Block 42"  # v2/v3 signing block; META-INF/ holds v1 (not used)
 # Brand in code: logcat tag "Ruta" (DiagLog, Icons, Host); the 2.0 tag must be gone (fails the build).
 # Strings that still say "RideDeck" (shown or logged) fail the build too. Lower-case "ridedeck."
 # storage keys (Keystore alias, prefs) and the 2.0 "ridedeck-" log prefix (pruning) are load-bearing and allowed.
@@ -170,11 +174,17 @@ def resource_table(apk):
 
 
 def main():
-    apk = Path(sys.argv[1]).resolve()
+    args = sys.argv[1:]
+    unsigned = "--unsigned" in args
+    args = [a for a in args if a != "--unsigned"]
+    if len(args) != 1:
+        sys.exit("usage: check_apk.py [--unsigned] APK")
+    apk = Path(args[0]).resolve()
     size = apk.stat().st_size
     expect(size < MAX_BYTES, f"APK is {size / 1048576:.1f} MB (limit {MAX_BYTES // 1048576} MB)")
     if apk.name.startswith("ruta-"):
-        expect(apk.name == APK_FILE, f"file name {apk.name}, expected {APK_FILE}")
+        expected_name = UNSIGNED_APK_FILE if unsigned else APK_FILE
+        expect(apk.name == expected_name, f"file name {apk.name}, expected {expected_name}")
     build_sh = Path(__file__).resolve().parent.parent / "build.sh"
     if build_sh.exists():
         text = build_sh.read_text()
@@ -287,11 +297,14 @@ def main():
     expect(any(n.startswith("res/mipmap-anydpi") and "ic_launcher" in n for n in names)
            or "mipmap/ic_launcher" in entries, "no adaptive launcher icon")
 
-    # Signature (v2/v3 with the pinned release key) and 16 KB-page-compatible alignment.
+    # Signature (v2/v3 with the pinned release key; none with --unsigned) and 16 KB-page-compatible alignment.
     # --min-sdk-version 24 makes apksigner check the v2 block too (it skips v2 when minSdk >= 28 and v3 exists).
-    verify = subprocess.run([tool("apksigner"), "verify", "--verbose", "--print-certs", "--min-sdk-version", "24",
+    if unsigned:
+        expect(APK_SIG_BLOCK_MAGIC not in apk.read_bytes() and not [n for n in names if n.startswith("META-INF/")],
+               "--unsigned APK carries a signature")
+    verify = None if unsigned else subprocess.run([tool("apksigner"), "verify", "--verbose", "--print-certs", "--min-sdk-version", "24",
                              str(apk)], capture_output=True, text=True)
-    if expect(verify.returncode == 0, f"apksigner verify failed: {verify.stderr.strip() or verify.stdout.strip()}"):
+    if verify and expect(verify.returncode == 0, f"apksigner verify failed: {verify.stderr.strip() or verify.stdout.strip()}"):
         expect("Verified using v2 scheme (APK Signature Scheme v2): true" in verify.stdout, "not v2-signed")
         expect("Verified using v3 scheme (APK Signature Scheme v3): true" in verify.stdout, "not v3-signed")
         expect(f"certificate SHA-256 digest: {SIGNER_SHA256}" in verify.stdout,
@@ -307,7 +320,7 @@ def main():
           f"{len(pairs)} icon pairs): identity, version {VERSION_NAME} ({VERSION_CODE}), label, single launcher, "
           f"services, permissions, no Vida/AppCompat/native/assets, brand (tag {LOG_TAG!r}), icons, "
           f"licence, theme, "
-          f"signature v2+v3 (pinned key), alignment.")
+          + ("unsigned (F-Droid signs it), " if unsigned else "signature v2+v3 (pinned key), ") + "alignment.")
 
 
 if __name__ == "__main__":

@@ -17,8 +17,28 @@ data class ScanCandidate(val mac: String, val name: String, val rssi: Int, val b
     }
 }
 
-/** How a bond attempt ended, from the ACTION_BOND_STATE_CHANGED states. */
-enum class BondOutcome { PENDING, BONDED, WRONG_PIN, REJECTED }
+/**
+ * Why pairing failed, judged from what actually happened (not merely that a PIN was armed).
+ * WRONG_PIN: our PIN reached the scooter and it refused it. NO_PIN_REQUEST: bonding failed but our
+ * PIN was never delivered (an OEM dialog took the request, a variant setPin cannot answer, or no
+ * request arrived). STALE_BOND: the phone is paired but the scooter no longer has the key.
+ * REJECTED: pairing was cancelled. LINK_LOST: the link dropped before the PIN could matter.
+ */
+enum class PairingFailure { WRONG_PIN, NO_PIN_REQUEST, STALE_BOND, REJECTED, LINK_LOST }
+
+/** How a bond attempt stands after one ACTION_BOND_STATE_CHANGED. */
+sealed class BondOutcome {
+    object Pending : BondOutcome() { override fun toString() = "Pending" }
+    object Bonded : BondOutcome() { override fun toString() = "Bonded" }
+    data class Failed(val failure: PairingFailure) : BondOutcome()
+}
+
+/**
+ * What Ruta's pairing-request answerer saw in one attempt (never the PIN): a request for the
+ * scooter arrived ([requested], with its [variant], -1 = none) and Android accepted our PIN
+ * ([delivered], setPin returned true).
+ */
+data class PinDelivery(val requested: Boolean = false, val variant: Int = -1, val delivered: Boolean = false)
 
 object PairingRules {
     const val PIN_MIN = 4
@@ -117,22 +137,90 @@ object PairingRules {
         return bonded + others
     }
 
+    /** UNBOND_REASON_* values that mean the pairing timed out or never really ran (not the PIN). */
+    const val UNBOND_REMOTE_DEVICE_DOWN = 4
+    const val UNBOND_DISCOVERY_IN_PROGRESS = 5
+    const val UNBOND_AUTH_TIMEOUT = 6
+    /** GATT statuses for an authentication/encryption failure: 5 insufficient authentication, 15 insufficient encryption, 137 auth fail. */
+    val AUTH_GATT_CODES = setOf(5, 15, 137)
+    /** GATT disconnect codes for a lost radio link (8 supervision timeout, 62 failed to establish, 133/147 generic/connect failure), not a refusal. */
+    val LINK_LOSS_GATT_CODES = setOf(8, 62, 133, 147)
+
     /**
      * Bond outcome from one ACTION_BOND_STATE_CHANGED ([previous] → [current], [reason] = the
-     * UNBOND_REASON_* extra or -1). BONDING → NONE with our PIN supplied means the scooter refused it,
-     * unless Android says pairing was cancelled (by the rider in an OEM dialog, or by the scooter):
-     * that is REJECTED, not a wrong PIN. Other reasons (e.g. the link dropping, which these scooters
-     * do on a wrong PIN) keep the wrong-PIN rule. Without a PIN the rider cancelled or the system
-     * dialog was rejected.
+     * UNBOND_REASON_* extra or -1). [pinArmed]: Ruta had a saved PIN ready; [pinDelivered]: Android
+     * accepted it for this attempt. BONDING → NONE is a wrong PIN only when our PIN was delivered and
+     * the scooter then refused it (auth failed/rejected, the link dropping as these scooters do, or
+     * no reason). Delivered but timed out, or the link dropped first with a link-loss [dropCode]
+     * (GATT disconnect code, -1 = none) → LINK_LOST. Armed but never delivered → NO_PIN_REQUEST.
+     * Cancelled (by the rider or the scooter), no PIN armed, or never bonding → REJECTED.
      */
-    fun bondOutcome(previous: Int, current: Int, pinSupplied: Boolean, reason: Int = -1): BondOutcome = when (current) {
-        BOND_BONDED -> BondOutcome.BONDED
-        BOND_NONE -> when {
-            !pinSupplied || previous != BOND_BONDING -> BondOutcome.REJECTED
-            reason == UNBOND_AUTH_CANCELED || reason == UNBOND_REMOTE_AUTH_CANCELED -> BondOutcome.REJECTED
-            else -> BondOutcome.WRONG_PIN
+    fun bondOutcome(previous: Int, current: Int, pinArmed: Boolean, pinDelivered: Boolean, reason: Int = -1, dropCode: Int = -1): BondOutcome = when (current) {
+        BOND_BONDED -> BondOutcome.Bonded
+        BOND_NONE -> BondOutcome.Failed(when {
+            previous != BOND_BONDING || !pinArmed -> PairingFailure.REJECTED
+            reason == UNBOND_AUTH_CANCELED || reason == UNBOND_REMOTE_AUTH_CANCELED -> PairingFailure.REJECTED
+            !pinDelivered -> PairingFailure.NO_PIN_REQUEST
+            reason == UNBOND_AUTH_TIMEOUT || reason == UNBOND_DISCOVERY_IN_PROGRESS -> PairingFailure.LINK_LOST
+            dropCode in LINK_LOSS_GATT_CODES -> PairingFailure.LINK_LOST // Android reports a mid-SMP drop as auth failed.
+            else -> PairingFailure.WRONG_PIN
+        })
+        else -> BondOutcome.Pending
+    }
+
+    /**
+     * Why a link that went down (GATT [gattCode]) failed, from the phone's [bondState] now. [pairing]:
+     * this attempt was bonding (the scooter was not paired at connect); [sawBonding]: it reached
+     * BONDING; [pinDelivered]: Android accepted our PIN. Null = not a pairing problem (an ordinary
+     * link failure).
+     * - Paired on the phone + an auth/encryption code → STALE_BOND (the scooter forgot the key).
+     * - PIN delivered, then a link-loss code (8/62/133/147) → LINK_LOST (the radio dropped, not the PIN).
+     * - PIN delivered, then an auth code or back to not paired → WRONG_PIN.
+     * - Bonding started or an auth code, PIN never delivered → NO_PIN_REQUEST.
+     * - Anything else while pairing → LINK_LOST.
+     */
+    fun linkFailure(bondState: Int, pairing: Boolean, sawBonding: Boolean, pinDelivered: Boolean, gattCode: Int): PairingFailure? {
+        val auth = gattCode in AUTH_GATT_CODES
+        return when {
+            bondState == BOND_BONDED -> if (auth) PairingFailure.STALE_BOND else null
+            !pairing -> null
+            pinDelivered && gattCode in LINK_LOSS_GATT_CODES -> PairingFailure.LINK_LOST
+            pinDelivered && (auth || (sawBonding && bondState == BOND_NONE)) -> PairingFailure.WRONG_PIN
+            !pinDelivered && (sawBonding || auth) -> PairingFailure.NO_PIN_REQUEST
+            else -> PairingFailure.LINK_LOST
         }
-        else -> BondOutcome.PENDING
+    }
+
+    /** Short title for [failure] (DESIGN microcopy; also the connection's status line, so it maps back with [failureFor]). */
+    fun failureTitle(failure: PairingFailure): String = when (failure) {
+        PairingFailure.WRONG_PIN -> "Scooter didn't accept this PIN"
+        PairingFailure.NO_PIN_REQUEST -> "Pairing didn't finish"
+        PairingFailure.STALE_BOND -> "Old Bluetooth pairing"
+        PairingFailure.REJECTED -> "Pairing cancelled"
+        PairingFailure.LINK_LOST -> "Lost the scooter while pairing"
+    }
+
+    /** One plain next step for [failure]; [name] = the scooter's Bluetooth name as Android lists it. */
+    fun failureHint(failure: PairingFailure, name: String? = null): String = when (failure) {
+        PairingFailure.WRONG_PIN -> "Open the Vida app and copy the PIN it shows now"
+        PairingFailure.NO_PIN_REQUEST -> "If Android asked for a PIN, type it there. Close the Vida app and try again"
+        PairingFailure.STALE_BOND -> "Forget ${name?.trim()?.takeIf { it.isNotEmpty() } ?: "the scooter"} in Bluetooth settings, then pair again"
+        PairingFailure.REJECTED -> "Try again and accept the pairing request"
+        PairingFailure.LINK_LOST -> "Close the Vida app, keep the scooter on and near, and try again"
+    }
+
+    /** The failure whose [failureTitle] [message] is (a connection status line); null for other messages. */
+    fun failureFor(message: String?): PairingFailure? =
+        if (message == null) null else PairingFailure.entries.firstOrNull { failureTitle(it).equals(message.trim(), ignoreCase = true) }
+
+    /** Diagnostic line for a pairing failure: what Ruta saw, never the PIN. [reason]/[gattCode] -1 = none. */
+    fun diagnostic(failure: PairingFailure, delivery: PinDelivery, bondState: Int, reason: Int = -1, gattCode: Int = -1): String =
+        "Pairing failed: $failure (request ${if (delivery.requested) variantName(delivery.variant) else "not seen"}, " +
+            "PIN ${if (delivery.delivered) "delivered" else "not delivered"}, bond ${bondStateName(bondState)}, " +
+            "reason ${reason.takeIf { it >= 0 } ?: "none"}, GATT ${gattCode.takeIf { it >= 0 } ?: "none"})"
+
+    fun bondStateName(state: Int): String = when (state) {
+        BOND_BONDED -> "bonded"; BOND_BONDING -> "bonding"; BOND_NONE -> "none"; else -> "unknown"
     }
 
     /** Variants that ask for a typed PIN/passkey (setPin can answer [VARIANT_PIN] and [VARIANT_PIN_16_DIGITS]). */
